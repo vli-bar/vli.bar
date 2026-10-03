@@ -7,7 +7,8 @@ import { VRMLoaderPlugin, VRMRequiredHumanBoneName } from '@pixiv/three-vrm';
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
 import { exportMotionVRMA } from '../src/vrma-export.js';
 import { applyDemoMotion } from '../src/demo-motion.js';
-import { applyCaptureToVRM } from '../src/motion-data.js';
+import { applyCaptureToVRM, applyMotionSampleToVRM, serializeMotionClip, validateMotionClip } from '../src/motion-data.js';
+import { LiveMotionSampler, MotionRecorder } from '../src/motion-capture.js';
 import { parseVRMA, createVRMAPlayer } from '../src/vrma.js';
 
 async function avatar() {
@@ -154,4 +155,54 @@ test('exported capture imports and seeks through the application standard VRMA p
   assert.ok(vrm.humanoid.getNormalizedBoneNode('leftUpperArm').quaternion.angleTo(expected) < .001);
   player.dispose();
   assert.ok(restHips.y > 0);
+});
+
+test('observed body and HMD poses agree between live display, saved preview and standard VRMA playback', async () => {
+  const vrm = await avatar();
+  const live = new LiveMotionSampler({ referenceSpaceType: 'local-floor' });
+  const recorder = new MotionRecorder(); recorder.start();
+  const expected = new Map();
+  const trackedPose = (position, yaw = 0) => ({ transform: { position: { x: position[0], y: position[1], z: position[2] },
+    orientation: { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) } }, emulatedPosition: false });
+  for (let i = 0; i <= 60; i++) {
+    const t = i / 30, bend = Math.sin(t * Math.PI) * .08, bob = Math.sin(t * Math.PI) * .025;
+    const positions = {
+      hips: [0, .95 + bob, 0], chest: [0, 1.3 + bob, 0], neck: [0, 1.5 + bob, 0], head: [0, 1.6 + bob, 0],
+      'left-upper-leg': [-.1, .92 + bob, 0], 'left-lower-leg': [-.1, .59 + bob, -.13 - bend],
+      'left-foot-ankle': [-.1, .2, .08], 'left-foot-ball': [-.1, .12, -.03],
+      'right-upper-leg': [.1, .92 + bob, 0], 'right-lower-leg': [.1, .56 + bob, 0],
+      'right-foot-ankle': [.1, .2, 0], 'right-foot-ball': [.1, .12, -.12],
+      'left-arm-upper': [-.2, 1.36 + bob, 0], 'left-arm-lower': [-.45, 1.12 + bob, -.16], 'left-hand-wrist': [-.4, .94 + bob, -.28],
+      'right-arm-upper': [.2, 1.36 + bob, 0], 'right-arm-lower': [.45, 1.12 + bob, -.16], 'right-hand-wrist': [.4, .94 + bob, -.28],
+    };
+    const frame = { session: { visibilityState: 'visible', inputSources: [] }, body: new Map(Object.keys(positions).map(name => [name, name])),
+      getViewerPose: () => trackedPose(positions.head, .2), getPose: name => trackedPose(positions[name]) };
+    const tracking = live.sampleFrame(t * 1000, frame, {});
+    recorder.recordSample(t * 1000, tracking);
+    if ([0, 15, 45].includes(i)) {
+      assert.equal(applyMotionSampleToVRM(vrm, tracking.sample, tracking), true);
+      expected.set(t, vrm.humanoid.getNormalizedPose());
+    }
+  }
+  const take = validateMotionClip(JSON.parse(serializeMotionClip(recorder.stop())));
+  assert.equal(take.tracking.body, 'browser-body');
+  assert.equal(Object.keys(take.frames[0].body).length, 18);
+  assert.ok(Math.abs(expected.get(0).leftLowerLeg.rotation[0]) > .1, 'an observed bent leg overrides the head/controller-only estimate');
+  const standard = await parseVRMA(exportMotionVRMA(vrm, take));
+  assert.equal(standard.duration, 2);
+  const player = createVRMAPlayer(vrm, standard);
+  const compare = (actual, target, label) => {
+    for (const name of ['hips', 'head', 'spine', 'leftUpperArm', 'leftLowerArm', 'leftUpperLeg', 'leftLowerLeg', 'rightLowerLeg']) {
+      const a = new THREE.Quaternion().fromArray(actual[name].rotation), b = new THREE.Quaternion().fromArray(target[name].rotation);
+      assert.ok(a.angleTo(b) < .001, `${label}: ${name} differs`);
+    }
+    assert.ok(new THREE.Vector3().fromArray(actual.hips.position).distanceTo(new THREE.Vector3().fromArray(target.hips.position)) < .00001, `${label}: hips position differs`);
+  };
+  for (const [t, livePose] of expected) {
+    applyCaptureToVRM(vrm, take, t);
+    compare(vrm.humanoid.getNormalizedPose(), livePose, `saved preview at ${t}`);
+    player.seek(t);
+    compare(vrm.humanoid.getNormalizedPose(), livePose, `VRMA at ${t}`);
+  }
+  player.dispose();
 });

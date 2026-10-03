@@ -1,9 +1,10 @@
 import * as THREE from 'three';
+import { sanitizeBodyJoints, interpolateBodyJoints, applyBodyToVRM } from './body-tracking.js';
 
 export const MOTION_FORMAT = 'vli.motion-capture';
 export const MOTION_VERSION = 1;
 export const MAX_CAPTURE_SECONDS = 180;
-export const MAX_MOTION_FILE_BYTES = 12 * 1024 * 1024;
+export const MAX_MOTION_FILE_BYTES = 32 * 1024 * 1024;
 const TRACKS = ['head', 'left', 'right'];
 const VISIBILITY = ['visible', 'visible-blurred', 'hidden'];
 const SPACES = ['local', 'local-floor', 'bounded-floor', 'unbounded'];
@@ -26,7 +27,8 @@ function pose(value, label) {
   const norm = Math.hypot(...quaternion);
   if (Math.abs(norm - 1) > .02) fail(`${label}の回転は単位クォータニオンにしてください。`);
   if (value.emulatedPosition !== undefined && typeof value.emulatedPosition !== 'boolean') fail(`${label}の追跡フラグが不正です。`);
-  return { position, quaternion: quaternion.map(n => round(n / norm)), emulatedPosition: value.emulatedPosition === true };
+  if (value.source !== undefined && !['viewer', 'controller-grip', 'hand-wrist'].includes(value.source)) fail(`${label}の入力元が不正です。`);
+  return { position, quaternion: quaternion.map(n => round(n / norm)), emulatedPosition: value.emulatedPosition === true, ...(value.source ? { source: value.source } : {}) };
 }
 
 /** Strictly bounded, sanitized import. Never retain arbitrary properties from JSON. */
@@ -50,7 +52,9 @@ export function validateMotionClip(data) {
     previous = frame.t;
     const clean = { t: frame.t, visibility: frame.visibility };
     for (const track of TRACKS) clean[track] = pose(frame[track], `${index + 1} フレーム目の ${track}`);
+    if (frame.body !== undefined) clean.body = sanitizeBodyJoints(frame.body, `${index + 1} フレーム目の身体関節`);
     if (frame.visibility !== 'visible' && TRACKS.some(track => clean[track])) fail('非表示中のフレームには追跡データを含められません。');
+    if (frame.visibility !== 'visible' && clean.body) fail('非表示中のフレームには身体関節を含められません。');
     hasHead ||= !!clean.head;
     return clean;
   });
@@ -58,16 +62,19 @@ export function validateMotionClip(data) {
   if (Math.abs(frames.at(-1).t - data.duration) > .00001) fail('最終フレームと長さが一致しません。');
   const initialHeadHeight = data.initialHeadHeight ?? null;
   if (initialHeadHeight !== null && (!Number.isFinite(initialHeadHeight) || initialHeadHeight < .3 || initialHeadHeight > 3)) fail('初期頭部高さが不正です。');
+  const usesWrist = frames.some(frame => ['left', 'right'].some(side => frame[side]?.source === 'hand-wrist'));
+  const usesController = frames.some(frame => ['left', 'right'].some(side => frame[side] && frame[side].source !== 'hand-wrist'));
+  const usesBody = frames.some(frame => frame.body && Object.keys(frame.body).length);
   return {
     format: MOTION_FORMAT, version: MOTION_VERSION, units: 'meters', coordinates: 'right-handed-y-up-head-origin',
     referenceSpace: data.referenceSpace, fps: data.fps, duration: data.duration, origin, initialHeadHeight,
-    tracking: { head: 'viewer', hands: 'controller-grip', body: 'inferred' },
+    tracking: { head: 'viewer', hands: usesWrist ? (usesController ? 'mixed' : 'hand-wrist') : 'controller-grip', body: usesBody ? 'browser-body' : 'inferred' },
     frames,
   };
 }
 
 export async function parseMotionFile(file) {
-  if (!file || !Number.isFinite(file.size) || file.size <= 0 || file.size > MAX_MOTION_FILE_BYTES) fail('JSON ファイルは 12 MB 以内にしてください。');
+  if (!file || !Number.isFinite(file.size) || file.size <= 0 || file.size > MAX_MOTION_FILE_BYTES) fail('JSON ファイルは 32 MB 以内にしてください。');
   let data;
   try { data = JSON.parse(await file.text()); } catch { fail('JSON ファイルを読み込めません。'); }
   return validateMotionClip(data);
@@ -93,7 +100,8 @@ export function downloadMotionClip(clip) {
 function interpolatePose(a, b, factor) {
   if (!a || !b) return null;
   const q = new THREE.Quaternion().fromArray(a.quaternion).slerp(new THREE.Quaternion().fromArray(b.quaternion), factor);
-  return { position: a.position.map((v, i) => v + (b.position[i] - v) * factor), quaternion: q.toArray(), emulatedPosition: a.emulatedPosition || b.emulatedPosition };
+  return { position: a.position.map((v, i) => v + (b.position[i] - v) * factor), quaternion: q.toArray(), emulatedPosition: a.emulatedPosition || b.emulatedPosition,
+    ...(a.source && a.source === b.source ? { source: a.source } : {}) };
 }
 
 /** Binary search sparse timestamps; never interpolate through tracking gaps. */
@@ -108,14 +116,15 @@ export function sampleMotionClip(clip, time) {
   const a = frames[low], b = frames[Math.min(low + 1, frames.length - 1)];
   if (a === b || t === a.t) return a;
   if (b.t - a.t > 2.5 / clip.fps || a.visibility !== 'visible' || b.visibility !== 'visible') {
-    return { t, visibility: 'hidden', head: null, left: null, right: null };
+    return { t, visibility: 'hidden', head: null, left: null, right: null, body: null };
   }
   const factor = (t - a.t) / (b.t - a.t);
-  return { t, visibility: 'visible', ...Object.fromEntries(TRACKS.map(track => [track, interpolatePose(a[track], b[track], factor)])) };
+  return { t, visibility: 'visible', ...Object.fromEntries(TRACKS.map(track => [track, interpolatePose(a[track], b[track], factor)])),
+    ...(a.body !== undefined || b.body !== undefined ? { body: interpolateBodyJoints(a.body, b.body, factor) } : {}) };
 }
 
 const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-const turnInverse = turn.clone().invert();
+const identity = new THREE.Quaternion();
 const restCache = new WeakMap();
 const clamp = THREE.MathUtils.clamp;
 
@@ -131,11 +140,11 @@ function rotateBoneToward(bone, child, target) {
   bone.updateWorldMatrix(false, true);
 }
 
-function armIK(vrm, side, tracked, headAnchor, meterScale) {
+function armIK(vrm, side, tracked, headAnchor, meterScale, basis) {
   const bone = name => vrm.humanoid.getNormalizedBoneNode(side + name);
   const upper = bone('UpperArm'), lower = bone('LowerArm'), hand = bone('Hand');
   if (!upper || !lower || !hand || !tracked) return;
-  const offset = new THREE.Vector3().fromArray(tracked.position).applyQuaternion(turn).multiplyScalar(meterScale);
+  const offset = new THREE.Vector3().fromArray(tracked.position).applyQuaternion(basis).multiplyScalar(meterScale);
   const target = vrm.scene.localToWorld(headAnchor.clone().add(offset));
   const shoulder = upper.getWorldPosition(new THREE.Vector3());
   const elbow = lower.getWorldPosition(new THREE.Vector3());
@@ -146,8 +155,8 @@ function armIK(vrm, side, tracked, headAnchor, meterScale) {
   const distance = clamp(direction.length(), Math.abs(lengthA - lengthB) + .001, lengthA + lengthB - .001);
   if (direction.lengthSq() < 1e-8) direction.set(0, -1, 0); else direction.normalize();
   target.copy(shoulder).addScaledVector(direction, distance);
-  const pole = new THREE.Vector3(side === 'left' ? .35 : -.35, -.9, -.35)
-    .transformDirection(vrm.scene.matrixWorld);
+  const pole = new THREE.Vector3(side === 'left' ? -.35 : .35, -.9, .35)
+    .applyQuaternion(basis).transformDirection(vrm.scene.matrixWorld);
   pole.addScaledVector(direction, -pole.dot(direction));
   if (pole.lengthSq() < .00001) pole.set(0, 0, 1).addScaledVector(direction, -direction.z);
   pole.normalize();
@@ -164,14 +173,19 @@ function armIK(vrm, side, tracked, headAnchor, meterScale) {
  * Call before vrm.update(delta); stage transforms are left untouched.
  */
 export function applyCaptureToVRM(vrm, clip, time) {
-  const sample = sampleMotionClip(clip, time);
+  return applyMotionSampleToVRM(vrm, sampleMotionClip(clip, time), clip);
+}
+
+/** Apply a live or recorded sample using the same retargeting path. */
+export function applyMotionSampleToVRM(vrm, sample, { initialHeadHeight = null } = {}) {
   const humanoid = vrm?.humanoid;
   if (!humanoid) return false;
   humanoid.resetNormalizedPose();
+  for (const name of ['aa', 'happy', 'blink']) vrm.expressionManager?.setValue(name, 0);
   const get = name => humanoid.getNormalizedBoneNode(name);
   const head = get('head'), hips = get('hips');
   if (!head || !hips) return false;
-  vrm.scene.updateMatrixWorld(true);
+  vrm.scene.updateWorldMatrix(true, true);
   let rest = restCache.get(vrm);
   if (!rest) {
     const anchor = vrm.scene.worldToLocal(head.getWorldPosition(new THREE.Vector3()));
@@ -179,13 +193,16 @@ export function applyCaptureToVRM(vrm, clip, time) {
     restCache.set(vrm, rest);
   }
   // Rest arms hang naturally when one controller loses tracking.
-  if (get('leftUpperArm')) get('leftUpperArm').rotation.z = -.85;
-  if (get('rightUpperArm')) get('rightUpperArm').rotation.z = .85;
-  if (!sample.head) return false;
-  const meterScale = Math.max(.1, Math.abs(rest.headAnchor.y)) / (clip.initialHeadHeight ?? 1.65);
-  const offset = new THREE.Vector3().fromArray(sample.head.position).applyQuaternion(turn).multiplyScalar(meterScale);
+  const legacy = vrm.meta?.metaVersion === '0';
+  const basis = legacy ? identity : turn;
+  if (get('leftUpperArm')) get('leftUpperArm').rotation.z = legacy ? .85 : -.85;
+  if (get('rightUpperArm')) get('rightUpperArm').rotation.z = legacy ? -.85 : .85;
+  const meterScale = Math.max(.1, Math.abs(rest.headAnchor.y)) / (initialHeadHeight ?? 1.65);
+  const bodyContext = { basis, headAnchor: rest.headAnchor, meterScale };
+  if (!sample?.head) return applyBodyToVRM(vrm, sample?.body, bodyContext);
+  const offset = new THREE.Vector3().fromArray(sample.head.position).applyQuaternion(basis).multiplyScalar(meterScale);
   hips.position.copy(rest.hips).add(new THREE.Vector3(clamp(offset.x, -1, 1), clamp(offset.y * .65, -.4, .25), clamp(offset.z, -1, 1)));
-  const orientation = new THREE.Quaternion().fromArray(sample.head.quaternion).premultiply(turn).multiply(turnInverse);
+  const orientation = new THREE.Quaternion().fromArray(sample.head.quaternion).premultiply(basis).multiply(basis.clone().invert());
   const angles = new THREE.Euler().setFromQuaternion(orientation, 'YXZ');
   const spine = get('spine');
   if (spine) spine.rotation.set(clamp(angles.x * .16, -.2, .2), clamp(angles.y * .2, -.45, .45), clamp(angles.z * .12, -.15, .15), 'YXZ');
@@ -193,10 +210,18 @@ export function applyCaptureToVRM(vrm, clip, time) {
   if (spine) head.quaternion.premultiply(spine.quaternion.clone().invert());
   for (const side of ['left', 'right']) {
     const leg = get(side + 'LowerLeg');
-    if (leg) leg.rotation.x = Math.max(0, -offset.y) * .25;
+    if (leg) leg.rotation.x = (legacy ? -1 : 1) * Math.max(0, -offset.y) * .25;
   }
-  vrm.scene.updateMatrixWorld(true);
-  armIK(vrm, 'left', sample.left, rest.headAnchor, meterScale);
-  armIK(vrm, 'right', sample.right, rest.headAnchor, meterScale);
+  vrm.scene.updateWorldMatrix(true, true);
+  armIK(vrm, 'left', sample.left, rest.headAnchor, meterScale, basis);
+  armIK(vrm, 'right', sample.right, rest.headAnchor, meterScale, basis);
+  const bodyApplied = applyBodyToVRM(vrm, sample.body, bodyContext);
+  // Body tracking can move the pelvis even when an arm is outside its field of
+  // view. Re-solve incomplete arms against the observed controller/wrist after
+  // that change, so those hands do not drift away with the estimated torso.
+  if (bodyApplied) for (const side of ['left', 'right']) {
+    const completeArm = ['-arm-upper', '-arm-lower', '-hand-wrist'].every(suffix => sample.body?.[side + suffix]);
+    if (!completeArm) armIK(vrm, side, sample[side], rest.headAnchor, meterScale, basis);
+  }
   return true;
 }

@@ -120,7 +120,10 @@ export function exportMotionVRMA(vrm, source, { fps = 30 } = {}) {
       extensionsUsed: [EXTENSION], extensions: { [EXTENSION]: extension },
       scene: 0, scenes: [{ name: 'VRM Animation', nodes: rootNodes }], nodes,
       animations: [{ name: capture ? 'Captured performance' : motion.title, channels, samplers }],
-      extras: { source: capture ? 'WebXR head and controller capture; torso and limbs inferred' : 'Original vli.bar choreography', bakedFramesPerSecond: fps },
+      extras: { source: capture ? (motion.tracking?.body === 'browser-body'
+        ? 'WebXR head, hands and browser body joints; browser and retargeting estimates included'
+        : 'WebXR head and controller or hand-wrist capture; torso and limbs inferred')
+        : 'Original vli.bar choreography', bakedFramesPerSecond: fps },
     }, arrays);
   } finally {
     for (const { bone, position, quaternion, scale } of originalPose) { bone.position.copy(position); bone.quaternion.copy(quaternion); bone.scale.copy(scale); }

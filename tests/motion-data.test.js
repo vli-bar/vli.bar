@@ -135,7 +135,7 @@ test('malformed, unbounded and unsupported data fail validation', () => {
 });
 
 test('upload refuses oversized files before reading and reports invalid JSON', async () => {
-  await assert.rejects(parseMotionFile({ size: MAX_MOTION_FILE_BYTES + 1, text: () => { throw new Error('must not read'); } }), /12 MB/);
+  await assert.rejects(parseMotionFile({ size: MAX_MOTION_FILE_BYTES + 1, text: () => { throw new Error('must not read'); } }), /32 MB/);
   await assert.rejects(parseMotionFile({ size: 100, text: async () => '{broken' }), /JSON/);
   const text = serializeMotionClip(take());
   assert.equal((await parseMotionFile({ size: text.length, text: async () => text })).frames.length, 3);
