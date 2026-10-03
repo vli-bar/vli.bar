@@ -40,3 +40,10 @@ jobs:
           else
             git diff --check "$(git hash-object -t tree /dev/null)" HEAD
           fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

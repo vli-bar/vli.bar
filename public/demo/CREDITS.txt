@@ -1,0 +1,17 @@
+NEON DOOR / first light
+Original vli.bar demonstration music and choreography, 2026.
+
+Audio: 72 seconds, 120 BPM, 32 kHz / 16-bit stereo PCM.
+Synthesized from oscillators and seeded noise by scripts/generate-demo.py.
+No third-party music, samples, lyrics, voices or motion-capture recordings used.
+Instrumental: an electronic stage theme with an opening, verse, build, chorus,
+bridge and ending. No singing or MC is represented in this demo.
+
+Motion: authored normalized VRM 1.0 humanoid rotations, 30 frames per second.
+Euler XYZ radians; root values are meters relative to the hips rest position.
+Small knee/ankle pulses, wave, alternating reaches, celebration and a final bow.
+This generated choreography is a demo, not PICO body-tracking data.
+
+These original music and motion assets are distributed with this repository
+for use, modification and redistribution in vli.bar demos and derivative works.
+No attribution is required. The separately supplied user VRM is not included.

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101117">
+  <meta name="description" content="壁の向こうに現れるバーチャルライブ。PICOで体験・モーション収録ができるvli.bar Live Lab。">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <title>vli.bar — 壁の向こうで、会おう。</title>
+</head>
+<body>
+<div id="app">
+  <header>
+    <a class="brand" href="./" aria-label="vli.bar ホーム">vli<span>.</span>bar</a>
+    <nav aria-label="メインメニュー"><a href="#stage">LIVE</a><a href="#studio">MOTION STUDIO</a></nav>
+    <span class="live">● LIVE LAB / 02</span>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">BEYOND THE WALL</p>
+      <h1>壁の向こうで、<br><em>会おう。</em></h1>
+      <p class="lead">いつもの空間に、まだ見たことのないステージを。<br>幕が上がれば、バーチャルとリアルが出会う。</p>
+      <div class="actions">
+        <button id="play" disabled>ライブを再生 <span aria-hidden="true">▶</span></button>
+        <button id="ar" class="secondary" disabled>AR対応を確認中</button>
+        <button id="stop" class="quiet">停止・リセット</button>
+      </div>
+      <p id="status" role="status">ステージを準備しています…</p>
+      <div class="facts"><span>01 / ORIGINAL AVATAR</span><span>02 / ORIGINAL SOUND & DANCE</span><span>03 / YOUR PERSPECTIVE</span></div>
+    </section>
+    <section class="viewer" id="stage" aria-label="ライブプレビュー">
+      <div class="viewhead"><span id="track-title">NEON DOOR</span><span id="phase">STANDBY</span></div>
+      <div id="viewport"></div>
+      <div class="transport"><span id="time">00:00</span><input id="seek" type="range" aria-label="再生位置" min="0" max="72" step="0.1" value="0"><span id="duration">01:12</span></div>
+      <div class="viewfoot"><p class="hint">ドラッグで視点移動 · スクロールでズーム</p><label class="volume">音量<input id="volume" type="range" min="0" max="1" step="0.05" value="0.6"></label></div>
+    </section>
+    <section class="settings">
+      <div><span class="eyebrow">SET YOUR STAGE</span><h2>あなたの場所が、ライブ会場。</h2><p>ARを開始し、壁の正面でトリガーを押すと配置・開演。<br>もう一度押すと停止。正面を向き直して再配置できます。</p><p class="note">壁の自動認識は行いません。舞台の幅と距離を合わせてください。<br>PICOブラウザがARに対応していない場合も、3DプレビューとVR収録を使えます。</p></div>
+      <div class="fields">
+        <label>舞台の幅 <output id="widthValue">2.4 m</output><input id="width" type="range" min="1" max="4" value="2.4" step="0.1"></label>
+        <label>目の前からの距離 <output id="distanceValue">2.0 m</output><input id="distance" type="range" min="1" max="5" value="2" step="0.1"></label>
+        <label class="file">自分のVRMで出演する<input id="model" type="file" accept=".vrm"></label>
+        <p class="note">選択したVRMは端末内で読み込みます。</p>
+      </div>
+    </section>
+    <section id="studio" class="studio">
+      <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">PICO 4 ULTRA · HEAD + HANDS</span></div>
+      <div class="studio-grid">
+        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>頭と両コントローラーの動きを、最大3分間記録。収録画面でトリガーを押すと3秒後に開始し、もう一度押すと保存して終了します。</p><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">全身・表情・音声・映像の録画ではありません。足と胴体はプレビュー用の推定姿勢です。</p></div>
+        <div class="studio-card"><span class="step-number">02</span><h3>モーションを読み込む</h3><p>保存した収録JSON、またはこのデモの振り付けJSONを読み込んで、アバターで確認できます。</p><label class="file">モーションをアップロード<input id="motion-file" type="file" accept=".json,application/json"></label><p id="take-info" role="status">モーションが選択されていません</p><button id="take-play" class="secondary" disabled>モーションをプレビュー</button><button id="demo-reset" class="quiet">デモに戻す</button></div>
+        <div class="studio-card"><span class="step-number">03</span><h3>保存して、次のライブへ。</h3><p>直近の収録はこのブラウザにも保存します。別の端末で使うときは、JSONをダウンロードしてください。</p><button id="take-download" class="secondary" disabled>モーションをダウンロード ↓</button><p class="note">アップロードは端末内への読み込みです。サーバーへ送信・共有されません。</p><details><summary>オリジナルデモ素材</summary><div class="download-links"><a href="./demo/vli-performer.vrm" download>VRMモデル ↓</a><a href="./demo/neon-door.wav" download>音源 WAV ↓</a><a href="./demo/motion.json" download>振り付け JSON ↓</a><a href="./demo/CREDITS.txt">素材のクレジット</a></div></details></div>
+      </div>
+    </section>
+  </main>
+  <footer><span>vli.bar / EXPERIMENTAL STAGE</span><span>OTAKUBA SUMMIT 10.12 → M3 10.25</span></footer>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

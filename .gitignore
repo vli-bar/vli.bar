@@ -1,0 +1,6 @@
+node_modules/
+dist/
+local-assets/
+*.vrm
+!public/demo/vli-performer.vrm
+.DS_Store
