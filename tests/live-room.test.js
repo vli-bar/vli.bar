@@ -25,7 +25,7 @@ async function fixture(t,options={}) {
   class Socket extends WebSocket {constructor(endpoint){super(endpoint,{origin:url});}}
   const join=async({room='stage',role='audience',device='headset',...rest}={})=>{
     const packets=[];
-    const client=new LiveRoom({WebSocketImpl:Socket,onPose:packet=>packets.push(packet)});
+    const client=new LiveRoom({WebSocketImpl:Socket,now:options.now,onPose:packet=>packets.push(packet)});
     clients.push(client);
     await client.connect({url,room,token,role,device,name:device,...rest});
     return {client,packets};
@@ -123,6 +123,25 @@ test('server drops packets for backpressured peers and resumes with current moti
   assert.equal(sender.client.sendPose({sample:{...sample(),t:.05}}),true);
   await until(()=>audience.packets.length===1);
   assert.equal(audience.packets[0].sample.t,.05);
+});
+
+test('relay discards an old uplink burst using elapsed sender time and resumes with the latest pose',async t=>{
+  let clock=1000;
+  const {join}=await fixture(t,{now:()=>clock});
+  const sender=await join({role:'performer'});
+  const audience=await join();
+  await until(()=>sender.client.peers.length===1);
+  const frame={type:'pose',v:1,seq:0,sentAt:1000,sample:sample(),referenceSpace:'local'};
+  sender.client._socket.send(JSON.stringify(frame));
+  await until(()=>audience.packets.length===1);
+  clock=3000;
+  sender.client._socket.send(JSON.stringify({...frame,seq:1,sentAt:1100}));
+  await delay(40);
+  assert.equal(audience.packets.length,1);
+  clock=3100;
+  sender.client._socket.send(JSON.stringify({...frame,seq:2,sentAt:3100}));
+  await until(()=>audience.packets.length===2);
+  assert.equal(audience.packets[1].seq,2);
 });
 
 test('room is bounded to sixteen people and a fresh empty room can use a new secret',async t=>{

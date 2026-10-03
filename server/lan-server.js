@@ -7,7 +7,7 @@ import {pathToFileURL, fileURLToPath} from 'node:url';
 import {hostname, networkInterfaces} from 'node:os';
 import {createHash, randomUUID, timingSafeEqual} from 'node:crypto';
 import {WebSocketServer} from 'ws';
-import {LIVE_VERSION, LIVE_MAX_FPS, MAX_LIVE_PACKET_BYTES, MAX_LIVE_BUFFER_BYTES, MAX_ROOM_PEERS,
+import {LIVE_VERSION, LIVE_MAX_FPS, LIVE_STALE_MS, MAX_LIVE_PACKET_BYTES, MAX_LIVE_BUFFER_BYTES, MAX_ROOM_PEERS,
   sanitizeJoin, sanitizeLiveFrame} from '../src/live-protocol.js';
 
 const MIME = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8',
@@ -93,7 +93,7 @@ export function createLanServer({localhost = false, host = localhost ? '127.0.0.
   });
   wss.on('connection',socket => {
     socket.alive = true; socket.budget = 60; socket.budgetAt = now(); socket.lastPoseAt = -Infinity;
-    socket.lastSeq = -1; socket.lastSentAt = -Infinity;
+    socket.lastSeq = -1; socket.lastSentAt = -Infinity; socket.motionClockOffset = null;
     socket.joinTimer = setTimeout(() => reject(socket,'参加情報が届かなかったため接続を終了しました。'),joinTimeoutMs);
     socket.joinTimer.unref?.();
     socket.on('error',() => {});
@@ -127,6 +127,11 @@ export function createLanServer({localhost = false, host = localhost ? '127.0.0.
         const clean = sanitizeLiveFrame(packet,socket.peer);
         if (clean.seq <= socket.lastSeq || clean.sentAt <= socket.lastSentAt) return;
         socket.lastSeq = clean.seq; socket.lastSentAt = clean.sentAt;
+        // Sender timestamps are monotonic and need not share our wall clock.
+        // Track the least observed delay; discard a queued uplink burst rather
+        // than presenting its old motion as a newly observed live pose.
+        socket.motionClockOffset = Math.min(socket.motionClockOffset ?? Infinity, at - clean.sentAt);
+        if (at - (clean.sentAt + socket.motionClockOffset) > LIVE_STALE_MS) return;
         if (at - socket.lastPoseAt < 1000 / LIVE_MAX_FPS) return;
         socket.lastPoseAt = at;
         const outgoing = {...clean,...socket.peer,serverTime:at};
