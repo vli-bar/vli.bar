@@ -22,6 +22,7 @@ import { CameraPoseSampler } from './camera-pose.js';
 import { LiveRoom } from './live-room.js';
 import { LivePerformer, liveTrackingFrame } from './live-performer.js';
 import { createLivePresence, sampleAudiencePose } from './live-presence.js';
+import { discoverLocalVenue } from './local-venue.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -65,7 +66,7 @@ let referenceSpaceType = 'local', liveTracking = null, previewAfterXR = false, a
 let sessionInputMode = 'controller', pendingTouchPlacement = false;
 let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0, cameraObservedAt = -Infinity;
 const cameraAvailable = isSecureContext && !!navigator.mediaDevices?.getUserMedia;
-let liveRole = null, liveDevice = 'desktop', livePoseSentAt = -Infinity, sharedHead = false;
+let liveRole = null, liveDevice = 'desktop', livePoseSentAt = -Infinity, sharedHead = false, localVenue = null;
 const livePerformer = new LivePerformer();
 const livePresence = createLivePresence(scene, stage);
 const liveRoom = new LiveRoom({
@@ -100,20 +101,27 @@ function liveDeviceChoice() {
 }
 $('lan-form').onsubmit = async event => {
   event.preventDefault();
-  if (session || xrBusy || cameraActive || cameraBusy || !ready()) return;
+  if (!localVenue || session || xrBusy || cameraActive || cameraBusy || !ready()) return;
   liveRole = $('lan-role').value; liveDevice = liveDeviceChoice(); livePoseSentAt = -Infinity;
   try {
-    await liveRoom.connect({url: $('lan-url').value.trim(), room: $('lan-room').value.trim(), token: $('lan-token').value,
+    await liveRoom.connect({url: localVenue.origin, room: $('lan-room').value.trim(), token: $('lan-token').value,
       name: $('lan-name').value.trim(), role: liveRole, device: liveDevice});
     $('lan-token').value = '';
     if (liveRole === 'audience') $('stage').scrollIntoView({behavior: 'smooth', block: 'center'});
   } catch (error) {$('lan-status').textContent = error.message; updateButtons();}
 };
 $('lan-disconnect').onclick = () => liveRoom.disconnect();
-// A local deployment serves both the app and relay. On Pages the host is entered explicitly.
-if (location.hostname !== 'vli.bar' && !location.hostname.endsWith('.github.io')) {
-  $('lan-url').value = location.port === '5173' ? 'http://localhost:8080' : location.origin;
-}
+discoverLocalVenue({origin:location.origin}).then(venue => {
+  localVenue = venue;
+  $('lan-url').value = venue?.origin ?? '';
+  $('runtime-mode').textContent = venue ? '● LOCAL / インターネット不要' : '● LIVE LAB / PREVIEW';
+  $('lan-mode').textContent = venue
+    ? '会場PCに接続しています。アプリ・モデル・音源・姿勢推定・モーション通信は、この会場PCだけで動作します。'
+    : 'LANライブは会場PCのアプリから参加します。オフラインキットを起動し、表示されたローカルIPのURLを全員の端末で開いてください。この公開プレビューから会場へは接続しません。';
+  $('lan-status').textContent = venue ? '同じ会場PCのページを全員で開き、ルーム名と合言葉を合わせて参加してください。'
+    : '会場アプリを開くと参加できます。起動方法は下の「オフラインの準備・起動手順」にあります。';
+  updateButtons();
+});
 window.addEventListener('pagehide', () => liveRoom.disconnect());
 const liveSampler = new LiveMotionSampler();
 const recorder = new MotionRecorder({onLimit:clip => { if (clip) acceptTake(clip); endXR(); }});
@@ -174,8 +182,8 @@ function updateButtons() {
   $('camera-facing').disabled = busy;
   $('camera-delay').disabled = cameraMusic.pending || cameraRecorder.state==='recording';
   const joining = liveRoom.state === 'connecting';
-  for (const id of ['lan-url','lan-room','lan-token','lan-name','lan-role','lan-device']) $(id).disabled = liveRoom.connected || joining;
-  $('lan-connect').disabled = !ready() || busy || liveRoom.connected || joining;
+  for (const id of ['lan-url','lan-room','lan-token','lan-name','lan-role','lan-device']) $(id).disabled = !localVenue || liveRoom.connected || joining;
+  $('lan-connect').disabled = !localVenue || !ready() || busy || liveRoom.connected || joining;
   $('lan-disconnect').disabled = !liveRoom.connected && !joining;
 }
 function resetPose() {

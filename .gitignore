@@ -7,3 +7,7 @@ local-assets/
 
 # Private LAN TLS keys and development certificates
 .lan-certs/
+venue-ca.crt
+
+# Self-contained offline distribution (includes a platform-specific Node runtime)
+artifacts/

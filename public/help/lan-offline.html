@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>会場用オフラインLAN手順 — vli.bar</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color: #172b35; background: #f4f7f5; line-height: 1.8; }
+    body { max-width: 880px; margin: auto; padding: 24px 20px 80px; }
+    h1 { line-height: 1.35; font-size: clamp(1.7rem, 6vw, 2.5rem); }
+    h2 { margin-top: 2.2rem; font-size: 1.35rem; border-bottom: 2px solid #c8dbd5; padding-bottom: .4rem; }
+    p, li { overflow-wrap: anywhere; } li { margin: .45rem 0; }
+    .intro { background: #daeee5; border-radius: 12px; padding: 18px; }
+    .note { background: #fff1d7; border-left: 4px solid #ba841b; padding: 12px 16px; }
+    code { background: #e1e9e6; border-radius: 4px; padding: .1em .25em; font-size: .92em; }
+    pre { background: #163029; color: #eafff4; padding: 16px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    pre code { background: none; padding: 0; }
+    a { color: #155d50; } table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #c8dbd5; }
+    footer { margin-top: 2rem; font-size: .9rem; color: #52645d; }
+    @media print { body { max-width: none; padding: 0; } pre, .intro, .note { color: #000; background: #fff; border: 1px solid #777; } }
+  </style>
+</head>
+<body>
+  <header>
+    <p>vli.bar / 会場に同梱する説明書</p>
+    <h1>インターネットなしで<br>LANライブを始める</h1>
+    <p class="intro">会場PCとスマホ・HMDを、同じWi-Fi／有線LANへ接続します。アプリ・VRM・音源・身体推定モデル・通信サーバーはキット内にあります。会場では公開サイト、CDN、公開DNS、外部中継を使いません。この説明ページも外部ファイルを読み込みません。</p>
+    <p><a href="/">会場アプリへ戻る</a> <span>（サーバーから開いている場合）</span></p>
+  </header>
+  <main>
+    <h2>1. 会場へ持ち込む前に準備する</h2>
+    <p>開発用PCで依存パッケージを取得し、次のコマンドでキットを作成します。この準備段階ではインターネットを使用できます。</p>
+    <pre><code>npm ci
+npm test
+npm run offline:pack</code></pre>
+    <p>出力先は <code>artifacts/vli-bar-offline-&lt;OS&gt;-&lt;CPU&gt;/</code> です。今回の環境では <code>darwin-arm64</code>、Mac／Apple Silicon用です。キット全体をUSB等で会場PCへコピーしてください。</p>
+    <p>Node実行環境、サーバー、ビルド済みアプリ、MediaPipeのWASM・身体推定モデル、VRM・VRMA・曲を同梱します。会場でNodeやnpmを別インストールする必要はありません。証明書生成にはOSのOpenSSLを使用します（Mac標準環境を想定）。別のOS・CPUでは対応するキットを事前に準備してください。</p>
+    <p>Android／PICOにも事前準備が必要です。OSとChrome／PICO Browserを使える状態にし、AndroidのAR観客にはARCore対応端末とGoogle Play開発者サービス（AR）を用意します。会場で初回ダウンロードが始まらないよう、使う端末でカメラ・ARを一度確認してください。端末のシステムソフトはキットには含みません。</p>
+
+    <h2>2. 会場のLANを作り、PCを起動する</h2>
+    <ol>
+      <li>Wi-FiルーターのWANを外し、会場PC・スマホ・PICOを同じWi-Fi／LANへ接続します。<strong>Wi-Fi自体はオフにしません。</strong>「インターネットなし」と表示されても接続を維持します。</li>
+      <li>ルーターの端末分離／AP isolationを無効にし、PCのファイアウォールで会場LANから8443番ポートへの接続を許可します。</li>
+      <li>Macではキット内の <code>start.command</code> を実行します。ターミナルからは <code>./start.sh</code> でも起動できます。起動したターミナルは開いたままにします。</li>
+    </ol>
+    <p>LAN用IPが1つなら自動選択します。複数候補が出た場合は、キットのフォルダーで次のように実際のLAN用IPを指定します。</p>
+    <pre><code>./runtime/node scripts/start-offline-lan.mjs --host 192.168.1.10</code></pre>
+    <p><code>192.168.1.10</code> は例です。起動時に表示された会場PCのIPを使います。ポートの既定値は8443です。全端末は <code>https://会場PCのIP:8443/</code> を直接開きます。公開ドメインやDNS設定は不要です。</p>
+
+    <h2>3. 各端末が会場用証明書を信頼する</h2>
+    <p>カメラやWebXRを使うため、LAN内でも信頼済みHTTPSが必要です。初回起動時に <code>.lan-certs/</code> へローカル認証局とサーバー証明書を作成します。<strong>生成するだけでは端末に信頼されません。</strong></p>
+    <ol>
+      <li>キット直下の <code>venue-ca.crt</code> をUSB等で各端末へコピーします。<code>.lan-certs/ca.crt</code> と同じ公開用証明書です。端末へ配るのはこのCA証明書だけです。</li>
+      <li>Androidでは設定の「セキュリティ」「暗号化と認証情報」等から証明書を追加し、認証局（CA）として登録します。名称は機種・OSによって異なります。</li>
+      <li>PICOでも、端末・ブラウザが提供する証明書の信頼設定へ登録します。PCだけに登録しても、スマホやHMDの設定は変わりません。</li>
+      <li>各ブラウザで <code>https://会場PCのIP:8443/</code> を開き、証明書エラーがなく、カメラ／ARを開始できることを確認します。</li>
+    </ol>
+    <p><code>ca.key</code> と <code>server.key</code> は会場PCに保持し、配布しません。IPが変わると同じ認証局でサーバー証明書を作り直します。認証局は保持されるため、IP変更だけなら端末側のCA登録はそのまま使用できます。認証局自体を作り直した場合は再登録が必要です。</p>
+    <p id="pico" class="note"><strong>PICOのCA信頼設定とWebXRへの反映は実機未確認です。</strong> 利用者のCAを信頼する設定が使えなければ、その端末でこの構成が動くとは保証できません。持ち込み前に確認してください。証明書警告を無視した続行や、安全機能を無効にするブラウザフラグは使用しません。Web経由の身体関節取得も任意機能で、PICO Motion Trackers・Enterprise機能・対応OS／ブラウザが必要と案内されています。一般向け端末では頭と取得できる手を使い、身体関節が提供されなければ未取得部分を推定します。</p>
+
+    <h2>4. 出演者と観客が同じルームへ参加する</h2>
+    <ol>
+      <li>全端末で会場PCのページを開き、「LAN ROOM」のルーム名・合言葉を揃えます。「接続先（このページの会場PC）」は自動設定され、入力は不要です。ルーム名は英数字・ハイフン・下線の1〜48文字、合言葉は12〜128文字です。</li>
+      <li>出演者は「出演者として配信」で参加し、「カメラを準備」または「HMDでモーションを収録」を開きます。待機中から姿勢を配信し、必要なら同時に収録できます。</li>
+      <li>観客は「観客として参加」。3D画面で受信を確認し、「ARでステージを開く」で壁に配置します。</li>
+      <li>「自分の姿勢をルームへ共有する」をオフにすると受信のみになります。終了は「ルームから退出」。切断された時は参加ボタンで入り直します。</li>
+    </ol>
+    <p>1ルームは出演者1人、合計16端末までです。最初の参加でルームができ、最後の退出またはサーバー終了で消えます。合言葉を持つ人は空いている出演枠に入れます。アカウントや出演者専用の管理権限はありません。</p>
+
+    <h2>5. 全員で舞台の位置を合わせる</h2>
+    <p>各端末で <strong>同じ壁・同じ下端中心・同じ幅・同じ向き</strong> に舞台を配置します。壁に中心と左右端の目印を付けておくと合わせやすくなります。</p>
+    <p>HMDの3点指定は同じ左下→右下→左上を使い、コントローラーの緑の点を壁の数cm手前へ移動して確定します。スマホのタップ配置や自動候補も、下端の位置を目で合わせます。</p>
+    <p>共有アンカーや自動の空間合わせはありません。位置や大きさの誤差、追跡のずれは残ります。ずれたら再配置し、AR終了・原点リセット後にも合わせ直してください。目印をカメラで読み取る機能ではありません。</p>
+
+    <h2>何が配信されるか</h2>
+    <table>
+      <thead><tr><th>端末</th><th>配信と表示</th></tr></thead>
+      <tbody>
+        <tr><td>出演者・カメラ</td><td>端末内で推定した頭・手・身体で、観客側のVRMを動かします。部屋の中の絶対移動は取得しません。</td></tr>
+        <tr><td>出演者・HMD</td><td>頭と手、対応環境で身体関節を使います。取得できない部位は推定します。</td></tr>
+        <tr><td>スマホ観客</td><td>AR端末位置を顔の目安に使います。顔だけを表示し、手は共有しません。</td></tr>
+        <tr><td>HMD観客</td><td>頭と、取得できた左右の手を表示します。</td></tr>
+        <tr><td>PC観客</td><td>位置を送らず、3D画面で視聴します。</td></tr>
+      </tbody>
+    </table>
+    <p>カメラ映像・マイク音声・VRMファイルは参加者間で送りません。実写の顔・表情・口の動きの配信ではありません。サーバーはモーション履歴を保存しません。手動収録は端末内へ保存し、VRMAで交換できます。</p>
+    <p>音声配信・各端末への曲同期はありません。同梱のNEON DOORを会場PCとスピーカー等で再生できます。通信や追跡が止まったモデルは非表示になります。</p>
+
+    <h2>開場前に確認する</h2>
+    <ol>
+      <li>WANを切断したまま、各端末でページを新しく開く。</li>
+      <li>VRMと音源が読み込まれ、カメラ推定やHMD追跡が始まる。</li>
+      <li>出演者1人と複数観客が参加し、動きと退室を確認する。</li>
+      <li>全員で舞台の中心・幅を揃え、見た目のずれを確認する。</li>
+    </ol>
+    <p>キットの整合性は、キット内で次のコマンドを実行して確認できます。</p>
+    <pre><code>./runtime/node scripts/build-offline-kit.mjs --verify .</code></pre>
+    <p>待ち受けを始めずにファイルと証明書の準備を確認する場合は、次のコマンドを使います。IPは実際の会場PCのものへ置き換えてください。</p>
+    <pre><code>./runtime/node scripts/start-offline-lan.mjs --host 192.168.1.10 --check</code></pre>
+    <p class="note">Android・PICO実機によるオフラインLAN・AR・証明書操作・性能は未確認です。PCでの通信・素材検証だけでは実機動作を保証できません。</p>
+  </main>
+  <footer>このファイルは単体で読むことができます。外部フォント・画像・スクリプト・ネット上の説明ページを読み込みません。</footer>
+</body>
+</html>

@@ -13,7 +13,7 @@
   <header>
     <a class="brand" href="./" aria-label="vli.bar ホーム">vli<span>.</span>bar</a>
     <nav aria-label="メインメニュー"><a href="#stage">LIVE</a><a href="#lan">LAN ROOM</a><a href="#studio">MOTION STUDIO</a></nav>
-    <span class="live">● LIVE LAB / 02</span>
+    <span id="runtime-mode" class="live">● LIVE LAB / PREVIEW</span>
   </header>
   <main>
     <section class="intro">
@@ -66,10 +66,11 @@
       </div>
     </section>
     <section id="lan" class="studio lan-studio">
-      <div class="section-title"><div><span class="eyebrow">LOCAL LIVE ROOM</span><h2>同じ会場で、一緒に観る。</h2></div><span class="chip">REALTIME MOTION / LAN</span></div>
+      <div class="section-title"><div><span class="eyebrow">LOCAL LIVE ROOM</span><h2>同じ会場で、一緒に観る。</h2></div><span class="chip">LOCAL WIFI / INTERNET NOT REQUIRED</span></div>
       <p class="note">同じWi-Fiの会場サーバーへ接続します。出演者の動きをステージへ配信し、ARでは観客同士の顔アバターも表示します。Androidスマホの観客は顔だけ、HMDは取得できる頭と手を共有します。</p>
+      <p id="lan-mode" class="note" role="status">会場PCから開いているか確認しています…</p>
       <form id="lan-form" class="lan-fields">
-        <label>会場サーバーのURL<input id="lan-url" type="url" placeholder="https://192.168.1.10:8443" required spellcheck="false" autocomplete="off"></label>
+        <label>接続先（このページの会場PC）<input id="lan-url" type="url" placeholder="会場アプリを開くと自動設定" readonly required spellcheck="false" autocomplete="off"></label>
         <label>ルーム名<input id="lan-room" value="live" required maxlength="48" pattern="[a-zA-Z0-9_\-]+" autocomplete="off"></label>
         <label>ルームの合言葉（12文字以上）<input id="lan-token" type="password" required minlength="12" maxlength="128" autocomplete="off"></label>
         <label>表示名<input id="lan-name" required value="ゲスト" maxlength="32" autocomplete="off"></label>
@@ -86,7 +87,7 @@
         <p><strong>一緒に観る</strong><br>「観客として参加」後にARを開始し、全員で同じ壁の同じ下端中心・幅へステージを配置してください。配置後に自分の位置が共有されます。Androidの顔はスマホ位置の目安で、実際の顔の映像や表情ではありません。</p>
       </div>
       <p class="note">最大16端末。カメラ映像・音声・モデルファイルは送信しません。出演者の動きは各端末のVRMに反映します。音楽は会場のスピーカー等で再生してください。位置合わせは手動で、端末間の誤差やずれが生じます。</p>
-      <details><summary>会場サーバーの準備</summary><p class="note">会場PCで <code>npm run build</code> の後、信頼済みの証明書を指定して <code>npm run lan</code> を起動します。スマホ・HMDで証明書が信頼されているHTTPS接続が必要です。Pages単独では中継サーバーは起動しません。</p><a href="https://github.com/vli-bar/vli.bar/blob/main/docs/lan-live.md" target="_blank" rel="noopener">HTTPSの準備・起動手順</a></details>
+      <details><summary>会場でのオフライン起動</summary><p class="note">オフラインキットを会場PCへコピーして起動します。会場ではNode.jsの追加インストールやビルド、外部サイトへの接続は不要です。初回にキットの認証局証明書を各端末へ登録し、全員で表示されたローカルIPのURLを開きます。Wi-Fiの外部回線は不要です。</p><a href="./help/lan-offline.html" target="_blank" rel="noopener">オフラインの準備・起動手順</a></details>
     </section>
     <section id="studio" class="studio">
       <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">ANDROID CAMERA / PICO 4 ULTRA</span></div>
@@ -105,10 +106,10 @@
           <div class="camera-feed"><video id="camera-video" playsinline muted aria-label="収録用カメラ映像"></video><p>カメラ映像（左右反転なし）</p><strong id="camera-countdown" aria-live="polite"></strong></div>
           <div id="camera-avatar-slot"></div>
         </div>
-        <p class="note">映像は端末内で処理し、保存・送信しません。マイクは使用しません。初回は姿勢推定モデル等の約17MBを読み込みます（環境により変動）。収録は通常15Hzを上限とし、端末の性能で変わります。</p>
+        <p class="note">映像は端末内で処理し、保存・送信しません。マイクは使用しません。初回はこのアプリの配信元から姿勢推定モデル等の約17MBを読み込みます（環境により変動）。会場版は会場PCから読み込み、外部接続は不要です。収録は通常15Hzを上限とし、端末の性能で変わります。</p>
       </div>
       <div class="studio-grid">
-        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>収録画面では、待機中からアバターが動きを反映します。トリガーで3秒後に曲と収録を同時スタート。もう一度押すか曲が終わると保存し、ページに戻ってプレビューします。</p><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">画面下の「ページへ戻る」を光線で選んで終了できます。収録中は「保存して戻る」に変わります。待機中のグリップで正面を合わせ直せます。</p><p class="note">頭・コントローラーまたは手首を取得。対応環境では身体関節も使用し、取得できない足・胴体は推定します。指・表情・マイク音声・映像は収録しません。</p><details><summary>PICOの全身トラッキングについて</summary><p class="note">Web経由の全身追跡は、PICO Motion Trackersに加え、ブラウザの対応とEnterprise機能が必要と案内されています。一般向けPICO 4 Ultraでは、トラッカーを接続するだけでは身体データを取得できない場合があります。</p><a href="https://nvidia.github.io/IsaacCapture/main/device/body_tracking.html" target="_blank" rel="noopener">対応条件・トラッカー設定（NVIDIA公式）</a></details></div>
+        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>収録画面では、待機中からアバターが動きを反映します。トリガーで3秒後に曲と収録を同時スタート。もう一度押すか曲が終わると保存し、ページに戻ってプレビューします。</p><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">画面下の「ページへ戻る」を光線で選んで終了できます。収録中は「保存して戻る」に変わります。待機中のグリップで正面を合わせ直せます。</p><p class="note">頭・コントローラーまたは手首を取得。対応環境では身体関節も使用し、取得できない足・胴体は推定します。指・表情・マイク音声・映像は収録しません。</p><details><summary>PICOの全身トラッキングについて</summary><p class="note">Web経由の全身追跡は、PICO Motion Trackersに加え、ブラウザの対応とEnterprise機能が必要と案内されています。一般向けPICO 4 Ultraでは、トラッカーを接続するだけでは身体データを取得できない場合があります。</p><a href="./help/lan-offline.html#pico" target="_blank" rel="noopener">PICOでの事前確認</a></details></div>
         <div class="studio-card"><span class="step-number">02</span><h3>モーションを読み込む</h3><p>標準形式のVRM Animation（.vrma）を読み込み、アバターで確認できます。生の収録JSONも読み込めます。</p><label class="file">モーションをアップロード<input id="motion-file" type="file" accept=".vrma,.json,application/json,model/gltf-binary"></label><p id="take-info" role="status">モーションが選択されていません</p><button id="take-play" class="secondary" disabled>モーションをプレビュー</button><button id="take-pause" class="quiet" disabled>プレビューを一時停止</button><label class="loop-option"><input id="take-music" type="checkbox" disabled> 収録時の音楽を再生</label><label class="loop-option"><input id="take-loop" type="checkbox" checked> プレビューを繰り返す</label><p class="note">再生すると上の画面へ移動します。全身表示で確認でき、再生位置のバーで動きを見直せます。曲付きで収録したモーションは、音楽も同期して再生します。</p><button id="demo-reset" class="quiet">デモに戻す</button><button id="demo-motion" class="quiet">デモの振り付けを読み込む</button></div>
         <div class="studio-card"><span class="step-number">03</span><h3>保存して、次のライブへ。</h3><p>カメラ・HMDで収録した直近のモーションはこのブラウザにも保存します。別の端末で使うときは、VRMAをダウンロードしてください。</p><button id="take-download" class="secondary" disabled>VRMAをダウンロード ↓</button><button id="raw-download" class="quiet" disabled>生の計測データ JSON ↓</button><p class="note">VRMA書き出しは付属モデルなどのVRM 1.0に対応。取得した情報と推定から作るアバター動作を保存します。計測記録と収録時の曲設定はJSONで保存できます。VRMAに音源は含まれません。</p><p class="note">アップロードは端末内への読み込みです。サーバーへ送信・共有されません。</p><details><summary>オリジナルデモ素材</summary><div class="download-links"><a href="./demo/vli-performer.vrm" download>VRMモデル ↓</a><a href="./demo/neon-door.wav" download>音源 WAV ↓</a><a href="./demo/neon-door.vrma" download>振り付け VRMA ↓</a><a href="./demo/CREDITS.txt">素材のクレジット</a></div></details></div>
       </div>

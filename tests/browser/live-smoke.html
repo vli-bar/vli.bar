@@ -34,7 +34,7 @@
     <button id="scene-start" type="button" disabled>Start continuous scene check</button>
     <button id="scene-stop" type="button" disabled>Stop scene check</button>
   </div>
-  <p>実アプリの描画確認用: 下のルームへ4台目の「観客」として参加し、continuous scene check を開始してください。60秒間、演者と観客の<strong>合成姿勢</strong>を送ります。実カメラ・実機の追跡結果ではありません。</p>
+  <p>実アプリの描画確認用: ビルド後のアプリを <code>http://localhost:8080/</code> で開き、下のルームへ4台目の「観客」として参加し、continuous scene check を開始してください。アプリのLAN参加はViteの5173番では利用できません。60秒間、演者と観客の<strong>合成姿勢</strong>を送ります。実カメラ・実機の追跡結果ではありません。</p>
   <label for="current-room">Current room</label><br /><input id="current-room" readonly autocomplete="off" /><br />
   <label for="current-token">Current test token</label><br /><input id="current-token" readonly autocomplete="off" />
   <p id="status" role="status" data-state="idle">未接続</p>

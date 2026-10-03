@@ -1,9 +1,9 @@
 import http from 'node:http';
 import https from 'node:https';
-import {createReadStream, readFileSync} from 'node:fs';
+import {createReadStream, readFileSync, realpathSync} from 'node:fs';
 import {realpath, stat} from 'node:fs/promises';
 import path from 'node:path';
-import {pathToFileURL, fileURLToPath} from 'node:url';
+import {fileURLToPath} from 'node:url';
 import {hostname, networkInterfaces} from 'node:os';
 import {createHash, randomUUID, timingSafeEqual} from 'node:crypto';
 import {WebSocketServer} from 'ws';
@@ -32,7 +32,9 @@ export function createLanServer({localhost = false, host = localhost ? '127.0.0.
   const trustedHosts = new Set(['localhost','127.0.0.1','[::1]',hostname().toLowerCase(),host.toLowerCase()]);
   trustedHosts.delete('0.0.0.0'); trustedHosts.delete('::');
   for (const addresses of Object.values(networkInterfaces())) for (const item of addresses ?? []) trustedHosts.add(item.family === 'IPv6' ? `[${item.address.toLowerCase()}]` : item.address);
-  if (configuredOrigin) trustedHosts.add(new URL(configuredOrigin).hostname);
+  if (configuredOrigin && !trustedHosts.has(new URL(configuredOrigin).hostname.toLowerCase())) {
+    throw new Error('VLI_PUBLIC_ORIGINにはこのPCのローカルIP・ホスト名だけを指定できます。公開サイトからの接続は許可しません。');
+  }
   const rooms = new Map();
   let closing = false;
   const hostOrigin = request => {
@@ -45,11 +47,26 @@ export function createLanServer({localhost = false, host = localhost ? '127.0.0.
   };
   const handler = async (request,response) => {
     response.setHeader('X-Content-Type-Options','nosniff');
-    if (!hostOrigin(request)) { response.writeHead(400); response.end('Invalid host'); return; }
+    const origin = hostOrigin(request);
+    if (!origin) { response.writeHead(400); response.end('Invalid host'); return; }
+    // All runtime assets, ML files and sockets stay on this venue server.
+    // Blob URLs support locally selected VRMs, textures and captured previews.
+    response.setHeader('Content-Security-Policy', [
+      "default-src 'self'", "script-src 'self' 'wasm-unsafe-eval'", "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:", "media-src 'self' blob:", "font-src 'self'",
+      `connect-src 'self' blob: ${origin.replace(/^http/, 'ws')}`, "worker-src 'self' blob:",
+      "object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'", "form-action 'self'",
+    ].join('; '));
+    response.setHeader('Cache-Control','no-store');
     if (!['GET','HEAD'].includes(request.method)) { response.writeHead(405); response.end(); return; }
     try {
-      const pathname = decodeURIComponent(new URL(request.url, 'https://local.invalid').pathname);
+      let pathname = decodeURIComponent(new URL(request.url, 'https://local.invalid').pathname);
       if (pathname === '/health') { response.setHeader('Content-Type','application/json'); response.end(request.method === 'HEAD' ? undefined : '{"ok":true,"protocol":1}'); return; }
+      if (pathname === '/lan-config.json') {
+        response.setHeader('Content-Type','application/json');
+        response.end(request.method === 'HEAD' ? undefined : JSON.stringify({local:true,origin,protocol:LIVE_VERSION})); return;
+      }
+      if (pathname === '/help' || pathname === '/help/') pathname = '/help/lan-offline.html';
       if (pathname.includes('\0') || pathname.includes('\\')) throw new Error('invalid path');
       const root = await realpath(distDir);
       const filename = await realpath(path.resolve(root, `.${pathname === '/' ? '/index.html' : pathname}`));
@@ -83,8 +100,8 @@ export function createLanServer({localhost = false, host = localhost ? '127.0.0.
     let allowed = false;
     try {
       const value = new URL(request.headers.origin);
-      const localhostDev = ['http:','https:'].includes(value.protocol) && localhostName(value.hostname);
-      allowed = value.origin === request.headers.origin && (value.origin === (configuredOrigin ?? origin) || value.origin === 'https://vli.bar' || localhostDev);
+      const localhostDev = localhost && ['http:','https:'].includes(value.protocol) && localhostName(value.hostname);
+      allowed = value.origin === request.headers.origin && (value.origin === origin || localhostDev);
     } catch { /* absent or malformed Origin is rejected */ }
     if (closing || !origin || !allowed || request.url !== '/live' || wss.clients.size >= 128) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
@@ -159,7 +176,7 @@ export function createLanServer({localhost = false, host = localhost ? '127.0.0.
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const localhost = args.includes('--localhost');
   const arg = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };

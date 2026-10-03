@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Offline kit smoke test — vli.bar</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10131c; color: #eef3ff; }
+    body { max-width: 1040px; margin: 2rem auto; padding: 0 1rem; }
+    button { background: #93efcf; color: #092720; border: 0; border-radius: .5rem; padding: .7rem 1rem; font: inherit; margin: .3rem; }
+    button:disabled { opacity: .4; }
+    li { margin: .5rem 0; }
+    [data-state="passed"] { color: #93efcf; } [data-state="failed"] { color: #ffb0b0; }
+    .media { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+    canvas, video { max-width: 100%; width: 310px; background: #18242c; }
+    #avatar canvas { height: 360px; width: 310px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #1e2836; padding: 1rem; }
+    table { width: 100%; border-collapse: collapse; } td, th { text-align: left; padding: .5rem; border-bottom: 1px solid #425267; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>Offline kit smoke test</h1>
+  <p>開発用。ビルド済みキットの同じサーバーからVRM・VRMA・音源・MediaPipeモデル/WASMを読み、推論結果を実WebSocketで3クライアントへ中継します。カメラ入力のみローカルのテスト画像を使う合成映像です。グローバルのネットワークAPIは置き換えません。</p>
+  <p>この画面だけではWANの切断を判定しません。会場LANを維持したまま外部接続を遮断して実施してください。実カメラ権限・Android/PICO実機のAR対応は検証しません。</p>
+  <button id="start" type="button">Start offline check</button><button id="stop" type="button" disabled>Stop and release</button>
+  <p id="status" role="status" data-state="idle">同梱サーバーから開き、Start を押してください。</p>
+  <p>Assertions: <strong id="assertion-count">0 / 9</strong> · Inference frames: <strong id="frames">0</strong> · Body joints: <strong id="joints">0</strong></p>
+  <ol id="assertions">
+    <li id="assert-vrm" data-state="pending">WAIT: 同梱VRMの実読み込み・Humanoid取得</li>
+    <li id="assert-vrma" data-state="pending">WAIT: 同梱VRMAの標準ローダー読み込み</li>
+    <li id="assert-audio" data-state="pending">WAIT: 72秒の同梱曲をWebAudioで実デコード</li>
+    <li id="assert-roster" data-state="pending">WAIT: 同じサーバーへ3つのWebSocket接続</li>
+    <li id="assert-inference" data-state="pending">WAIT: 実WASMで合成映像から身体を推定</li>
+    <li id="assert-relay" data-state="pending">WAIT: 実推論の姿勢を両観客が受信</li>
+    <li id="assert-phone" data-state="pending">WAIT: スマホ観客の手・身体を除去して中継</li>
+    <li id="assert-headset" data-state="pending">WAIT: HMD観客の両手を中継</li>
+    <li id="assert-origin" data-state="pending">WAIT: 外部originの資源取得・CSP違反がない</li>
+  </ol>
+  <div class="media"><canvas id="source" width="640" height="427"></canvas><video id="video" muted playsinline></video><div id="avatar" aria-label="VRM rendered from inferred pose"></div></div>
+  <pre id="result">No checks run.</pre>
+  <details open><summary>実際に読み込んだ資源とorigin</summary><table><thead><tr><th>Type</th><th>URL</th><th>Origin</th></tr></thead><tbody id="resources"></tbody></table></details>
+  <script type="module" src="./offline-smoke.js"></script>
+</body>
+</html>
