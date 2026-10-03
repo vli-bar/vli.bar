@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { sanitizeBodyJoints, interpolateBodyJoints, applyBodyToVRM } from './body-tracking.js';
+import { DURATION as DEMO_DURATION } from './timeline.js';
 
 export const MOTION_FORMAT = 'vli.motion-capture';
 export const MOTION_VERSION = 1;
@@ -29,6 +30,13 @@ function pose(value, label) {
   if (value.emulatedPosition !== undefined && typeof value.emulatedPosition !== 'boolean') fail(`${label}の追跡フラグが不正です。`);
   if (value.source !== undefined && !['viewer', 'controller-grip', 'hand-wrist'].includes(value.source)) fail(`${label}の入力元が不正です。`);
   return { position, quaternion: quaternion.map(n => round(n / norm)), emulatedPosition: value.emulatedPosition === true, ...(value.source ? { source: value.source } : {}) };
+}
+
+function accompaniment(value, duration) {
+  // Only a bundled track identifier is allowed. Importing a take must never
+  // choose a remote audio URL or retain arbitrary metadata from the file.
+  if (!object(value) || value.track !== 'neon-door' || !Number.isFinite(value.offset) || value.offset < 0 || value.offset >= DEMO_DURATION || value.offset + duration > DEMO_DURATION + .001) return null;
+  return { track: 'neon-door', offset: value.offset };
 }
 
 /** Strictly bounded, sanitized import. Never retain arbitrary properties from JSON. */
@@ -65,10 +73,12 @@ export function validateMotionClip(data) {
   const usesWrist = frames.some(frame => ['left', 'right'].some(side => frame[side]?.source === 'hand-wrist'));
   const usesController = frames.some(frame => ['left', 'right'].some(side => frame[side] && frame[side].source !== 'hand-wrist'));
   const usesBody = frames.some(frame => frame.body && Object.keys(frame.body).length);
+  const music = accompaniment(data.accompaniment, data.duration);
   return {
     format: MOTION_FORMAT, version: MOTION_VERSION, units: 'meters', coordinates: 'right-handed-y-up-head-origin',
     referenceSpace: data.referenceSpace, fps: data.fps, duration: data.duration, origin, initialHeadHeight,
     tracking: { head: 'viewer', hands: usesWrist ? (usesController ? 'mixed' : 'hand-wrist') : 'controller-grip', body: usesBody ? 'browser-body' : 'inferred' },
+    ...(music ? { accompaniment: music } : {}),
     frames,
   };
 }

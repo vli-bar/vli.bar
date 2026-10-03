@@ -141,6 +141,61 @@ test('upload refuses oversized files before reading and reports invalid JSON', a
   assert.equal((await parseMotionFile({ size: text.length, text: async () => text })).frames.length, 3);
 });
 
+test('bundled accompaniment survives JSON import and stored-clip validation with its offset', async () => {
+  for (const offset of [0, 12.3456789, 71.9999999]) {
+    const clip = take();
+    clip.frames = [clip.frames[0]];
+    clip.duration = 0;
+    clip.accompaniment = { track: 'neon-door', offset };
+    const text = serializeMotionClip(clip);
+    const imported = await parseMotionFile({ size: Buffer.byteLength(text), text: async () => text });
+    assert.deepEqual(imported.accompaniment, { track: 'neon-door', offset });
+    const restored = validateMotionClip(structuredClone(imported));
+    assert.deepEqual(restored.accompaniment, { track: 'neon-door', offset });
+    assert.notEqual(restored.accompaniment, imported.accompaniment);
+  }
+});
+
+test('invalid accompaniment is ignored without rejecting a valid existing motion clip', () => {
+  const clip = take();
+  assert.ok(!Object.hasOwn(validateMotionClip(clip), 'accompaniment'));
+  const invalid = [
+    null, false, 0, 'neon-door', [], {},
+    { track: 'neon-door' }, { track: 'neon-door', offset: '0' },
+    ...[-1, 72, 100, Infinity, -Infinity, NaN].map(offset => ({ track: 'neon-door', offset })),
+    { track: 'unknown', offset: 0 }, { track: 'https://example.com/audio.wav', offset: 0 },
+    { track: '<audio autoplay>', offset: 0 },
+  ];
+  for (const value of invalid) {
+    const clean = validateMotionClip({ ...clip, accompaniment: value });
+    assert.ok(!Object.hasOwn(clean, 'accompaniment'));
+    assert.deepEqual(clean.frames, clip.frames);
+  }
+});
+
+test('accompaniment keeps only the bundled track and numeric offset', () => {
+  const clip = take();
+  clip.accompaniment = { track: 'neon-door', offset: 0, url: 'https://example.com/audio.wav', html: '<audio autoplay>', arbitrary: { nested: true } };
+  const clean = validateMotionClip(clip);
+  assert.deepEqual(clean.accompaniment, { track: 'neon-door', offset: 0 });
+  assert.ok(clip.accompaniment.url, 'validation must not mutate caller data');
+  assert.ok(!serializeMotionClip(clip).includes('example.com'));
+});
+
+test('accompaniment cannot bind motion beyond the end of its bundled song', () => {
+  const clip = take();
+  const remaining = 72 - clip.duration;
+  for (const offset of [remaining, remaining + .0005]) {
+    assert.deepEqual(validateMotionClip({ ...clip, accompaniment: { track: 'neon-door', offset } }).accompaniment, { track: 'neon-door', offset });
+  }
+  for (const offset of [remaining + .002, 71.99]) {
+    const result = validateMotionClip({ ...clip, accompaniment: { track: 'neon-door', offset } });
+    assert.ok(!Object.hasOwn(result, 'accompaniment'));
+    assert.equal(result.duration, clip.duration);
+    assert.deepEqual(result.frames, clip.frames);
+  }
+});
+
 test('synthetic browser import fixture follows the same bounded recording format', () => {
   const clip = validateMotionClip(JSON.parse(readFileSync(new URL('./fixtures/capture-sample.json', import.meta.url))));
   assert.equal(clip.duration, 2);
