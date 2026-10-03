@@ -6,6 +6,7 @@ const VERTICAL_LIMIT = Math.sin(20 * Math.PI / 180);
 const pointNames = ['左下', '右下', '左上'];
 const matrixOf = pose => new THREE.Matrix4().fromArray(pose.transform.matrix);
 const cancelSource = source => {try {source?.cancel();} catch { /* Session may already be inactive. */ }};
+const resolveMode = (mode, inputMode) => inputMode === 'touch' && mode === 'manual' ? 'distance' : mode;
 
 /** Uses native WebXR geometry when supplied; never invents a detected wall. */
 export class WallPlacement {
@@ -24,38 +25,45 @@ export class WallPlacement {
     });
     this.planeViews = new Map();
     this.session = null;
+    this.hitTestVersion = 0;
     this.report = {state: 'not-started'};
     this.visuals.visible = false;
   }
 
-  start(session, referenceSpace, {mode = 'auto', width = 2.4, distance = 2} = {}) {
+  start(session, referenceSpace, {mode = 'auto', width = 2.4, distance = 2, inputMode = 'controller'} = {}) {
     this.end();
     this.session = session; this.referenceSpace = referenceSpace;
-    this.mode = mode; this.width = width; this.distance = distance;
+    this.inputMode = inputMode === 'touch' ? 'touch' : 'controller';
+    this.mode = resolveMode(mode, this.inputMode); this.width = width; this.distance = distance;
     this.points = []; this.candidate = null; this.placed = null; this.message = '';
     this.roomAttempted = false; this.viewer = null; this.lastUpdate = -Infinity;
-    this.report = {state: 'active', mode, enabledFeatures: session.enabledFeatures ? Array.from(session.enabledFeatures) : null,
-      planeAPI: 'waiting', planes: 0, verticalPlanes: 0, hitTest: 'waiting', roomCapture: typeof session.initiateRoomCapture === 'function' ? 'available' : 'unavailable'};
+    this.report = {state: 'active', mode: this.mode, inputMode: this.inputMode, enabledFeatures: session.enabledFeatures ? Array.from(session.enabledFeatures) : null,
+      planeAPI: this.mode === 'auto' ? 'waiting' : 'not-requested', planes: 0, verticalPlanes: 0,
+      hitTest: this.mode === 'auto' ? 'waiting' : 'disabled', roomCapture: typeof session.initiateRoomCapture === 'function' ? 'available' : 'unavailable'};
     this.visuals.visible = true;
     this.preview.visible = false; this.dots.forEach(dot => { dot.visible = false; });
     // Feature requests can settle after XR has ended. Dispose late results too.
-    if (mode === 'auto') this.setupHitTest(session);
+    if (this.mode === 'auto') this.setupHitTest(session);
   }
 
   async setupHitTest(session) {
+    const version = ++this.hitTestVersion;
+    const active = () => this.session === session && this.mode === 'auto' && this.hitTestVersion === version;
     if (typeof session.requestHitTestSource !== 'function') {this.report.hitTest = 'unavailable'; return;}
+    this.report.hitTest = 'waiting';
     try {
       const space = await session.requestReferenceSpace('viewer');
-      if (this.session !== session) return;
+      if (!active()) return;
       const source = await session.requestHitTestSource({space, entityTypes: ['plane']});
-      if (this.session !== session) {cancelSource(source); return;}
+      if (!active()) {cancelSource(source); return;}
       this.hitSource = source; this.report.hitTest = 'available';
     } catch (error) {
-      if (this.session === session) this.report.hitTest = error.name || 'unavailable';
+      if (active()) this.report.hitTest = error.name || 'unavailable';
     }
   }
 
   end() {
+    ++this.hitTestVersion;
     cancelSource(this.hitSource); this.hitSource = null;
     this.session = null; this.candidate = null; this.placed = null;
     this.visuals.visible = false;
@@ -64,13 +72,26 @@ export class WallPlacement {
     if (this.report.state === 'active') this.report.state = 'ended';
   }
 
-  reset({switchToManual = false} = {}) {
-    if (switchToManual) this.mode = 'manual';
+  reset({switchToManual = false, mode} = {}) {
+    const previousMode = this.mode;
+    this.mode = resolveMode(mode ?? (switchToManual ? 'manual' : this.mode), this.inputMode);
     this.points = []; this.placed = null; this.candidate = null; this.message = '';
     this.lastUpdate = -Infinity; this.report.tracking = false;
     this.report.mode = this.mode;
+    delete this.report.placementSource;
     this.preview.visible = false;
     this.dots.forEach(dot => {dot.visible = false;});
+    for (const {line} of this.planeViews.values()) line.visible = false;
+    if (this.mode !== previousMode) {
+      // Requests in flight belong to the mode that initiated them. A late
+      // source must not revive auto detection after switching to distance.
+      ++this.hitTestVersion;
+      cancelSource(this.hitSource); this.hitSource = null;
+      this.report.planeAPI = this.mode === 'auto' ? 'waiting' : 'not-requested';
+      this.report.hitTest = this.mode === 'auto' ? 'waiting' : 'disabled';
+      this.report.planes = 0; this.report.verticalPlanes = 0;
+      if (this.session && this.mode === 'auto') this.setupHitTest(this.session);
+    }
   }
 
   orientation(normal) {
@@ -201,26 +222,39 @@ export class WallPlacement {
   async requestRoomCapture() {
     const session = this.session;
     if (this.mode !== 'auto' || this.roomAttempted || typeof session?.initiateRoomCapture !== 'function') {
-      this.message = '壁が見つからない場合はグリップで3点指定へ'; return;
+      this.message = this.inputMode === 'touch'
+        ? (this.mode === 'distance' ? 'スマホを壁に向け、配置ボタンを押してください' : '壁が見つからない場合は距離指定へ切り替えてください')
+        : '壁が見つからない場合はグリップで3点指定へ';
+      return;
     }
     this.roomAttempted = true; this.report.roomCapture = 'requested';
     this.message = '端末の部屋スキャン案内を確認してください';
     try {
       await session.initiateRoomCapture();
-      if (this.session === session) {this.report.roomCapture = 'completed'; this.message = '';}
+      if (this.session === session) {this.report.roomCapture = 'completed'; if (this.mode === 'auto') this.message = '';}
     } catch (error) {
-      if (this.session === session) {this.report.roomCapture = error.name; this.message = '部屋スキャンを利用できません。グリップで3点指定へ';}
+      if (this.session === session) {
+        this.report.roomCapture = error.name;
+        if (this.mode === 'auto') this.message = this.inputMode === 'touch'
+          ? '部屋スキャンを利用できません。距離指定へ切り替えてください'
+          : '部屋スキャンを利用できません。グリップで3点指定へ';
+      }
     }
   }
 
   guidance() {
+    const touch = this.inputMode === 'touch';
     if (!this.report.tracking) return ['位置を追跡中', '周囲を見て追跡の復帰を待ってください'];
-    if (this.placed) return ['ステージを配置しました', 'トリガーで開演 · グリップで再配置'];
+    if (this.placed) return ['ステージを配置しました', touch ? '再生ボタンで開演 · 再配置ボタンで位置を変更' : 'トリガーで開演 · グリップで再配置'];
     if (this.message) return ['壁の配置', this.message];
     if (this.mode === 'manual') return [`壁の3点指定 ${this.points.length + 1}/3 · ${pointNames[this.points.length]}`, '緑の点を指定位置に合わせてトリガー'];
-    if (this.candidate) return [this.mode === 'distance' ? '指定距離で配置（壁検出なし）' : '壁の候補を検出', '枠の位置でトリガー → 配置 · もう一度で開演'];
-    if (this.report.planeAPI !== 'available' && !['available', 'waiting'].includes(this.report.hitTest)) return ['壁情報を取得できません', 'グリップでコントローラーによる3点指定へ'];
-    return [`壁を探しています · 垂直面 ${this.report.verticalPlanes}`, this.report.roomCapture === 'available' ? '壁中心を見る · トリガーで部屋スキャン' : '壁中心を見る · グリップで3点指定へ'];
+    if (this.candidate) return [this.mode === 'distance' ? '指定距離で配置（壁検出なし）' : '壁の候補を検出', touch ? '画面中央の枠を確認し、配置ボタンを押してください' : '枠の位置でトリガー → 配置 · もう一度で開演'];
+    if (this.mode === 'distance') return ['配置位置を調整中（壁検出なし）', touch ? 'スマホを正面に向け、画面中央の枠を確認してください' : '壁を正面に見て、配置する枠を確認してください'];
+    if (this.report.planeAPI !== 'available' && !['available', 'waiting'].includes(this.report.hitTest)) return ['壁情報を取得できません', touch ? '距離指定へ切り替えて配置してください' : 'グリップでコントローラーによる3点指定へ'];
+    const search = this.report.roomCapture === 'available'
+      ? (touch ? '画面中央を壁に向ける · 配置ボタンで部屋スキャン' : '壁中心を見る · トリガーで部屋スキャン')
+      : (touch ? '画面中央を壁に向ける · 見つからない場合は距離指定へ' : '壁中心を見る · グリップで3点指定へ');
+    return [`壁を探しています · 垂直面 ${this.report.verticalPlanes}`, search];
   }
 
   diagnostics() {return {...this.report};}

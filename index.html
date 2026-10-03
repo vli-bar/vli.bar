@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101117">
-  <meta name="description" content="壁の向こうに現れるバーチャルライブ。PICOで体験・モーション収録ができるvli.bar Live Lab。">
+  <meta name="description" content="壁の向こうに現れるバーチャルライブ。AndroidスマホとPICOで体験・モーション収録ができるvli.bar Live Lab。">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <title>vli.bar — 壁の向こうで、会おう。</title>
 </head>
@@ -39,14 +39,16 @@
       <div>
         <span class="eyebrow">SET YOUR STAGE</span><h2>あなたの場所が、ライブ会場。</h2>
         <div class="placement-instructions">
-          <p><strong>壁を自動検出</strong><br>ARを開始し、壁の中心を見ます。候補枠が現れたらトリガーで配置し、もう一度押すと開演します。</p>
+          <p><strong>壁を自動検出</strong><br>ARを開始し、壁の中心を見ます。候補枠が現れたら、スマホは「ここに配置」、HMDはトリガーで配置します。配置後にライブを再生できます。</p>
           <p><strong>コントローラーで3点を指定</strong><br>舞台を置く範囲の左下・右下・左上で、コントローラーの緑の点を壁の数cm手前に合わせ、順にトリガーを押します。幅は実測し、高さは比率を保って決まります。</p>
-          <p>サイドグリップで再配置できます。自動検出中に押すと、3点指定へ切り替わります。</p>
+          <p>スマホは「置き直す」で再配置できます。HMDはサイドグリップで再配置し、自動検出中に押すと3点指定へ切り替わります。</p>
         </div>
         <p class="note">自動検出は、端末のブラウザが平面情報またはヒットテストを公開している場合に使えます。APIが提供されない環境では、部屋や壁の自動解析はできません。</p>
-        <p class="note">PICOブラウザがARに対応していない場合も、3DプレビューとVR収録を使えます。</p>
+        <p class="note" id="device-support" role="status">AndroidスマホはARCore対応機種とChrome、Google Play開発者サービス（AR）が必要です。AR非対応でも3Dプレビューとカメラ収録を利用できます。iPhoneは今回の対象外です。</p>
       </div>
       <div class="fields">
+        <label>ARの操作方法<select id="xr-input-mode"><option value="auto" selected>端末に合わせる</option><option value="touch">Androidスマホ（タップ）</option><option value="controller">HMD（コントローラー）</option></select></label>
+        <p class="note">スマホでは画面中央を壁へ向け、「ここに配置」をタップします。壁が見つからないときは「距離指定へ」で配置できます。3点指定はHMD用です。</p>
         <label>舞台の配置方法
           <select id="placement-mode" aria-describedby="wall-status">
             <option value="auto" selected>壁を自動検出</option>
@@ -64,16 +66,41 @@
       </div>
     </section>
     <section id="studio" class="studio">
-      <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">PICO 4 ULTRA · LIVE MOTION</span></div>
+      <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">ANDROID CAMERA / PICO 4 ULTRA</span></div>
       <p id="tracking-status" role="status" class="note">取得できる頭・手・身体の情報を、収録画面で確認できます。</p>
+      <div class="record-options"><label class="loop-option"><input id="record-music" type="checkbox" checked> NEON DOORに合わせて収録（1分12秒）</label><p class="note">オフにすると音楽なしで最大3分収録できます。音量は上のプレビュー画面で調整できます。</p><button id="music-check" class="quiet">収録用の曲を試聴</button></div>
+      <div class="camera-studio" id="camera-studio">
+        <div class="section-title"><div><span class="eyebrow">ANDROID CAMERA CAPTURE</span><h3>スマホカメラで、全身の動きを収録。</h3></div><span class="chip">カメラによる姿勢推定</span></div>
+        <p class="note">スマホを固定し、1人の全身が映る明るい場所で撮影します。腕・脚・胴体を推定してアバターへ反映します。奥行き・隠れた部位の精度や、部屋の中の移動の再現には制限があります。</p>
+        <div class="camera-actions">
+          <label>カメラ<select id="camera-facing"><option value="user">前面カメラ</option><option value="environment">背面カメラ</option></select></label>
+          <label>開始まで<select id="camera-delay"><option value="3">3秒</option><option value="5" selected>5秒</option><option value="10">10秒</option></select></label>
+          <button id="camera-start" disabled>カメラを準備</button><button id="camera-record" disabled>収録を開始</button><button id="camera-stop" class="quiet" hidden>カメラを終了</button>
+        </div>
+        <p id="camera-status" role="status">カメラを準備すると映像とアバターを確認できます。音楽の設定は上のチェックボックスで変更できます。</p>
+        <div id="camera-panel" class="camera-layout" hidden>
+          <div class="camera-feed"><video id="camera-video" playsinline muted aria-label="収録用カメラ映像"></video><p>カメラ映像（左右反転なし）</p><strong id="camera-countdown" aria-live="polite"></strong></div>
+          <div id="camera-avatar-slot"></div>
+        </div>
+        <p class="note">映像は端末内で処理し、保存・送信しません。マイクは使用しません。初回は姿勢推定モデル等の約17MBを読み込みます（環境により変動）。収録は通常15Hzを上限とし、端末の性能で変わります。</p>
+      </div>
       <div class="studio-grid">
-        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>収録画面では、待機中からアバターが動きを反映します。トリガーで3秒後に曲と収録を同時スタート。もう一度押すか曲が終わると保存し、ページに戻ってプレビューします。</p><label class="loop-option"><input id="record-music" type="checkbox" checked> NEON DOORに合わせて収録（1分12秒）</label><p class="note">オフにすると音楽なしで最大3分収録できます。音量は上のプレビュー画面で調整できます。</p><button id="music-check" class="quiet">収録用の曲を試聴</button><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">画面下の「ページへ戻る」を光線で選んで終了できます。収録中は「保存して戻る」に変わります。待機中のグリップで正面を合わせ直せます。</p><p class="note">頭・コントローラーまたは手首を取得。対応環境では身体関節も使用し、取得できない足・胴体は推定します。指・表情・マイク音声・映像は収録しません。</p><details><summary>PICOの全身トラッキングについて</summary><p class="note">Web経由の全身追跡は、PICO Motion Trackersに加え、ブラウザの対応とEnterprise機能が必要と案内されています。一般向けPICO 4 Ultraでは、トラッカーを接続するだけでは身体データを取得できない場合があります。</p><a href="https://nvidia.github.io/IsaacCapture/main/device/body_tracking.html" target="_blank" rel="noopener">対応条件・トラッカー設定（NVIDIA公式）</a></details></div>
+        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>収録画面では、待機中からアバターが動きを反映します。トリガーで3秒後に曲と収録を同時スタート。もう一度押すか曲が終わると保存し、ページに戻ってプレビューします。</p><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">画面下の「ページへ戻る」を光線で選んで終了できます。収録中は「保存して戻る」に変わります。待機中のグリップで正面を合わせ直せます。</p><p class="note">頭・コントローラーまたは手首を取得。対応環境では身体関節も使用し、取得できない足・胴体は推定します。指・表情・マイク音声・映像は収録しません。</p><details><summary>PICOの全身トラッキングについて</summary><p class="note">Web経由の全身追跡は、PICO Motion Trackersに加え、ブラウザの対応とEnterprise機能が必要と案内されています。一般向けPICO 4 Ultraでは、トラッカーを接続するだけでは身体データを取得できない場合があります。</p><a href="https://nvidia.github.io/IsaacCapture/main/device/body_tracking.html" target="_blank" rel="noopener">対応条件・トラッカー設定（NVIDIA公式）</a></details></div>
         <div class="studio-card"><span class="step-number">02</span><h3>モーションを読み込む</h3><p>標準形式のVRM Animation（.vrma）を読み込み、アバターで確認できます。生の収録JSONも読み込めます。</p><label class="file">モーションをアップロード<input id="motion-file" type="file" accept=".vrma,.json,application/json,model/gltf-binary"></label><p id="take-info" role="status">モーションが選択されていません</p><button id="take-play" class="secondary" disabled>モーションをプレビュー</button><button id="take-pause" class="quiet" disabled>プレビューを一時停止</button><label class="loop-option"><input id="take-music" type="checkbox" disabled> 収録時の音楽を再生</label><label class="loop-option"><input id="take-loop" type="checkbox" checked> プレビューを繰り返す</label><p class="note">再生すると上の画面へ移動します。全身表示で確認でき、再生位置のバーで動きを見直せます。曲付きで収録したモーションは、音楽も同期して再生します。</p><button id="demo-reset" class="quiet">デモに戻す</button><button id="demo-motion" class="quiet">デモの振り付けを読み込む</button></div>
-        <div class="studio-card"><span class="step-number">03</span><h3>保存して、次のライブへ。</h3><p>直近の収録はこのブラウザにも保存します。別の端末で使うときは、VRMAをダウンロードしてください。</p><button id="take-download" class="secondary" disabled>VRMAをダウンロード ↓</button><button id="raw-download" class="quiet" disabled>生の計測データ JSON ↓</button><p class="note">VRMA書き出しは付属モデルなどのVRM 1.0に対応。取得した情報と推定から作るアバター動作を保存します。計測記録と収録時の曲設定はJSONで保存できます。VRMAに音源は含まれません。</p><p class="note">アップロードは端末内への読み込みです。サーバーへ送信・共有されません。</p><details><summary>オリジナルデモ素材</summary><div class="download-links"><a href="./demo/vli-performer.vrm" download>VRMモデル ↓</a><a href="./demo/neon-door.wav" download>音源 WAV ↓</a><a href="./demo/neon-door.vrma" download>振り付け VRMA ↓</a><a href="./demo/CREDITS.txt">素材のクレジット</a></div></details></div>
+        <div class="studio-card"><span class="step-number">03</span><h3>保存して、次のライブへ。</h3><p>カメラ・HMDで収録した直近のモーションはこのブラウザにも保存します。別の端末で使うときは、VRMAをダウンロードしてください。</p><button id="take-download" class="secondary" disabled>VRMAをダウンロード ↓</button><button id="raw-download" class="quiet" disabled>生の計測データ JSON ↓</button><p class="note">VRMA書き出しは付属モデルなどのVRM 1.0に対応。取得した情報と推定から作るアバター動作を保存します。計測記録と収録時の曲設定はJSONで保存できます。VRMAに音源は含まれません。</p><p class="note">アップロードは端末内への読み込みです。サーバーへ送信・共有されません。</p><details><summary>オリジナルデモ素材</summary><div class="download-links"><a href="./demo/vli-performer.vrm" download>VRMモデル ↓</a><a href="./demo/neon-door.wav" download>音源 WAV ↓</a><a href="./demo/neon-door.vrma" download>振り付け VRMA ↓</a><a href="./demo/CREDITS.txt">素材のクレジット</a></div></details></div>
       </div>
     </section>
   </main>
   <footer><span>vli.bar / EXPERIMENTAL STAGE</span><span>OTAKUBA SUMMIT 10.12 → M3 10.25</span></footer>
+</div>
+<div id="xr-touch-overlay" hidden>
+  <div class="xr-touch-top"><strong>vli.bar / AR LIVE</strong><button id="xr-touch-exit" class="secondary">ページへ戻る</button></div>
+  <div class="xr-reticle" aria-hidden="true">＋</div>
+  <div class="xr-touch-bottom">
+    <p id="xr-touch-status" role="status">画面中央を壁に向けてください。</p>
+    <div class="xr-touch-actions"><button id="xr-touch-place">ここに配置</button><button id="xr-touch-play" disabled>ライブを再生</button><button id="xr-touch-reset" class="secondary">置き直す</button><button id="xr-touch-mode" class="secondary">距離指定へ</button></div>
+    <label class="volume">音量<input id="xr-touch-volume" type="range" min="0" max="1" step="0.05" value="0.6"></label>
+  </div>
 </div>
 <script type="module" src="/src/main.js"></script>
 </body>

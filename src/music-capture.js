@@ -13,8 +13,9 @@ export class MusicCapture {
 
   get pending() { return this.preparing || this.countdownAt !== null; }
 
-  async arm({withMusic = true, referenceSpaceType = 'local'} = {}) {
+  async arm({withMusic = true, referenceSpaceType = 'local', countdownSeconds = 3} = {}) {
     this.cancel();
+    if (![3, 5, 10].includes(countdownSeconds)) throw new RangeError('開始までの秒数が不正です。');
     const generation = this.generation;
     this.withMusic = withMusic;
     this.referenceSpaceType = referenceSpaceType;
@@ -25,11 +26,11 @@ export class MusicCapture {
       if (withMusic) await this.audio.prepare();
       if (generation !== this.generation) return;
       this.preparing = false;
-      this.countdownAt = this.now() + 3000;
+      this.countdownAt = this.now() + countdownSeconds * 1000;
     } catch {
       if (generation !== this.generation) return;
       this.preparing = false;
-      this.error = '音楽を準備できません。トリガーで再試行してください。';
+      this.error = `音楽を準備できません。${this.referenceSpaceType==='camera'?'「収録を開始」':'トリガー'}で再試行してください。`;
     }
   }
 
@@ -43,7 +44,8 @@ export class MusicCapture {
   tick(timeMs, tracking) {
     if (this.countdownAt !== null && this.now() >= this.countdownAt) {
       // Neither the song nor the recording starts without a usable first pose.
-      if (!tracking?.origin || !tracking.sample?.head || tracking.sample.head.emulatedPosition || tracking.sample.visibility !== 'visible') return null;
+      const cameraEstimate = tracking?.source === 'camera-pose' && tracking?.referenceSpace === 'camera';
+      if (!tracking?.origin || !tracking.sample?.head || (tracking.sample.head.emulatedPosition && !cameraEstimate) || tracking.sample.visibility !== 'visible') return null;
       this.countdownAt = null;
       try {
         if (this.withMusic) this.audio.play(0);
@@ -51,7 +53,7 @@ export class MusicCapture {
         this.recorder.recordSample(this.withMusic ? 0 : timeMs, tracking);
       } catch {
         this.cancel();
-        this.error = '音楽を開始できません。トリガーで再試行してください。';
+        this.error = `音楽を開始できません。${this.referenceSpaceType==='camera'?'「収録を開始」':'トリガー'}で再試行してください。`;
         return null;
       }
     }
@@ -63,7 +65,10 @@ export class MusicCapture {
     }
     // The audio clock also drives recorded timestamps, so rendering jitter
     // cannot accumulate drift between a take and its backing track.
-    this.recorder.recordSample(this.withMusic ? this.audio.time * 1000 : timeMs, tracking);
+    // A camera pose describes the frame before inference, not the later result
+    // callback. Subtract processing time from the song clock for that sample.
+    const inferenceDelay = this.referenceSpaceType === 'camera' ? Math.max(0, this.now() - timeMs) : 0;
+    this.recorder.recordSample(this.withMusic ? Math.max(0, this.audio.time * 1000 - inferenceDelay) : timeMs, tracking);
     if (this.withMusic && this.audio.time >= this.audio.duration) return this.finish();
     return null;
   }

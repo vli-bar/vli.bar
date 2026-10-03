@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Camera motion smoke test — synthetic video</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10131c; color: #eef3ff; }
+    body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    button, a.download { background: #93efcf; color: #092720; border: 0; border-radius: .5rem; padding: .75rem 1rem; font: inherit; display: inline-block; }
+    button:disabled { opacity: .4; }
+    .media { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+    canvas, video { width: min(100%, 440px); background: black; border: 1px solid #607080; }
+    dl { display: grid; grid-template-columns: 12rem 1fr; gap: .4rem 1rem; }
+    dd { margin: 0; } pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #1e2836; padding: 1rem; }
+    a { color: #93efcf; } [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1>Camera motion smoke test</h1>
+  <p>開発用・実カメラを使用しない合成映像テストです。MediaPipe 公式テスト画像を canvas.captureStream() で供給します。モデル・WASM・推論・身体変換・録画・JSON 検証はアプリの実装を使用します。</p>
+  <p><a href="https://storage.googleapis.com/mediapipe-assets/pose.jpg">画像の公式配布元</a> · <a href="https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/tasks/testdata/vision/BUILD">公式テストの定義</a></p>
+  <button id="start" type="button">Start synthetic capture</button>
+  <button id="stop" type="button" disabled>Stop and validate</button>
+  <a id="download" class="download" hidden>Download validated JSON</a>
+  <p id="status" role="status" data-state="idle">Start を押して実 WASM を検証します。</p>
+  <dl>
+    <dt>Camera ready</dt><dd id="ready">false</dd>
+    <dt>Detected landmarks</dt><dd id="landmark-count">0</dd>
+    <dt>Usable landmarks</dt><dd id="usable-landmarks">0</dd>
+    <dt>Estimated body joints</dt><dd id="body-count">0</dd>
+    <dt>Pose quality</dt><dd id="pose-quality">waiting</dd>
+    <dt>Recorded frames</dt><dd id="recorded-frames">0</dd>
+    <dt>Duration</dt><dd id="duration">0.00</dd>
+    <dt>JSON validation</dt><dd id="validation-result">not run</dd>
+    <dt>Stream tracks</dt><dd id="stream-tracks">none</dd>
+  </dl>
+  <div class="media"><canvas id="source" width="640" height="427"></canvas><video id="camera-video" muted playsinline></video></div>
+  <pre id="result">No capture yet.</pre>
+  <details><summary>Validated motion JSON</summary><textarea id="raw-json" aria-label="Validated motion JSON" readonly rows="12" style="width:100%"></textarea></details>
+  <script type="module" src="./camera-smoke.js"></script>
+</body>
+</html>

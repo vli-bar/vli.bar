@@ -1,0 +1,17 @@
+MediaPipe Tasks Vision 0.10.32 and BlazePose GHUM 3D Lite
+Copyright Google LLC. Licensed under the Apache License, Version 2.0.
+See LICENSE in this directory.
+
+JavaScript / WebAssembly runtime:
+https://www.npmjs.com/package/@mediapipe/tasks-vision/v/0.10.32
+https://github.com/google-ai-edge/mediapipe
+
+Pose Landmarker Lite model, float16, version 1:
+https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+Model card (includes the Apache 2.0 license declaration):
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf
+https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker
+
+Runtime and model are served from this site's own origin. Camera frames are
+processed in the browser; vli.bar does not upload camera images or microphone
+audio. Monocular world landmarks are estimates, not measured room positions.

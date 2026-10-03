@@ -8,7 +8,7 @@ export const MAX_CAPTURE_SECONDS = 180;
 export const MAX_MOTION_FILE_BYTES = 32 * 1024 * 1024;
 const TRACKS = ['head', 'left', 'right'];
 const VISIBILITY = ['visible', 'visible-blurred', 'hidden'];
-const SPACES = ['local', 'local-floor', 'bounded-floor', 'unbounded'];
+const SPACES = ['local', 'local-floor', 'bounded-floor', 'unbounded', 'camera'];
 const round = value => Math.round(value * 1e6) / 1e6;
 const fail = message => { throw new Error(`モーションデータ: ${message}`); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -20,7 +20,7 @@ function vector(value, length, label, bound) {
   return value.map(round);
 }
 
-function pose(value, label) {
+function pose(value, label, camera = false) {
   if (value === null) return null;
   if (!object(value)) fail(`${label}が不正です。`);
   const position = vector(value.position, 3, `${label}の位置`, 100);
@@ -28,8 +28,8 @@ function pose(value, label) {
   const norm = Math.hypot(...quaternion);
   if (Math.abs(norm - 1) > .02) fail(`${label}の回転は単位クォータニオンにしてください。`);
   if (value.emulatedPosition !== undefined && typeof value.emulatedPosition !== 'boolean') fail(`${label}の追跡フラグが不正です。`);
-  if (value.source !== undefined && !['viewer', 'controller-grip', 'hand-wrist'].includes(value.source)) fail(`${label}の入力元が不正です。`);
-  return { position, quaternion: quaternion.map(n => round(n / norm)), emulatedPosition: value.emulatedPosition === true, ...(value.source ? { source: value.source } : {}) };
+  if (value.source !== undefined && !['viewer', 'controller-grip', 'hand-wrist', 'camera-pose'].includes(value.source)) fail(`${label}の入力元が不正です。`);
+  return { position, quaternion: quaternion.map(n => round(n / norm)), emulatedPosition: camera || value.source === 'camera-pose' || value.emulatedPosition === true, ...(camera ? { source: 'camera-pose' } : value.source ? { source: value.source } : {}) };
 }
 
 function accompaniment(value, duration) {
@@ -49,7 +49,8 @@ export function validateMotionClip(data) {
   if (!Number.isInteger(data.fps) || data.fps < 1 || data.fps > 60) fail('サンプリング周波数は 1〜60 Hz にしてください。');
   if (!Number.isFinite(data.duration) || data.duration < 0 || data.duration > MAX_CAPTURE_SECONDS) fail('長さは 180 秒以内にしてください。');
   if (!Array.isArray(data.frames) || !data.frames.length || data.frames.length > MAX_CAPTURE_SECONDS * data.fps + 2) fail('フレーム数が不正です。');
-  const origin = pose(data.origin, '原点');
+  const camera = data.referenceSpace === 'camera';
+  const origin = pose(data.origin, '原点', camera);
   if (!origin) fail('原点がありません。');
   let previous = -1;
   let hasHead = false;
@@ -59,8 +60,9 @@ export function validateMotionClip(data) {
     if (!VISIBILITY.includes(frame.visibility)) fail('可視状態が不正です。');
     previous = frame.t;
     const clean = { t: frame.t, visibility: frame.visibility };
-    for (const track of TRACKS) clean[track] = pose(frame[track], `${index + 1} フレーム目の ${track}`);
+    for (const track of TRACKS) clean[track] = pose(frame[track], `${index + 1} フレーム目の ${track}`, camera);
     if (frame.body !== undefined) clean.body = sanitizeBodyJoints(frame.body, `${index + 1} フレーム目の身体関節`);
+    if (camera && clean.body) for (const joint of Object.values(clean.body)) joint.emulatedPosition = true;
     if (frame.visibility !== 'visible' && TRACKS.some(track => clean[track])) fail('非表示中のフレームには追跡データを含められません。');
     if (frame.visibility !== 'visible' && clean.body) fail('非表示中のフレームには身体関節を含められません。');
     hasHead ||= !!clean.head;
@@ -77,7 +79,8 @@ export function validateMotionClip(data) {
   return {
     format: MOTION_FORMAT, version: MOTION_VERSION, units: 'meters', coordinates: 'right-handed-y-up-head-origin',
     referenceSpace: data.referenceSpace, fps: data.fps, duration: data.duration, origin, initialHeadHeight,
-    tracking: { head: 'viewer', hands: usesWrist ? (usesController ? 'mixed' : 'hand-wrist') : 'controller-grip', body: usesBody ? 'browser-body' : 'inferred' },
+    tracking: camera ? { head: 'camera-pose', hands: 'camera-pose', body: 'camera-pose' }
+      : { head: 'viewer', hands: usesWrist ? (usesController ? 'mixed' : 'hand-wrist') : 'controller-grip', body: usesBody ? 'browser-body' : 'inferred' },
     ...(music ? { accompaniment: music } : {}),
     frames,
   };
@@ -125,7 +128,11 @@ export function sampleMotionClip(clip, time) {
   }
   const a = frames[low], b = frames[Math.min(low + 1, frames.length - 1)];
   if (a === b || t === a.t) return a;
-  if (b.t - a.t > 2.5 / clip.fps || a.visibility !== 'visible' || b.visibility !== 'visible') {
+  // Camera fps is a sampling ceiling, not a guaranteed ML inference cadence.
+  // Bridge up to 500ms between valid observations; explicit null/hidden data
+  // still remains a gap. XR keeps its stricter cadence-based threshold.
+  const maxGap = clip.referenceSpace === 'camera' ? .5 : 2.5 / clip.fps;
+  if (b.t - a.t > maxGap || a.visibility !== 'visible' || b.visibility !== 'visible') {
     return { t, visibility: 'hidden', head: null, left: null, right: null, body: null };
   }
   const factor = (t - a.t) / (b.t - a.t);

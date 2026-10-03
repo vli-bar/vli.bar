@@ -3,7 +3,7 @@ import { MAX_CAPTURE_SECONDS, MOTION_FORMAT, MOTION_VERSION, validateMotionClip 
 import { readBodyJoints } from './body-tracking.js';
 
 const round = value => Math.round(value * 1e6) / 1e6;
-const SPACES = ['local', 'local-floor', 'bounded-floor', 'unbounded'];
+const SPACES = ['local', 'local-floor', 'bounded-floor', 'unbounded', 'camera'];
 const hiddenSample = (t = 0, visibility = 'hidden') => ({ t, visibility, head: null, left: null, right: null, body: null });
 
 /**

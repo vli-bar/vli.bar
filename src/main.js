@@ -16,6 +16,9 @@ import { WallPlacement } from './wall-placement.js';
 import { createMotionPreview } from './motion-preview.js';
 import { CaptureAudio } from './capture-audio.js';
 import { MusicCapture } from './music-capture.js';
+import { xrInputMode, xrSessionOptions } from './xr-session-options.js';
+import { CameraMotion } from './camera-motion.js';
+import { CameraPoseSampler } from './camera-pose.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -56,30 +59,64 @@ let session = null, sessionMode = null, xrBusy = false, arSupported = false, vrS
 let playing = false, finished = false, playRequest = 0, selectedTake = null, activeSource = 'demo', musicAudition = false;
 let previewTime = 0, previewOrigin = 0, pendingPlacement = false, lastUI = 0;
 let referenceSpaceType = 'local', liveTracking = null, previewAfterXR = false, autoplayAfterXR = true, xrInputReady = false, trackingReport = {state: 'not-started'};
+let sessionInputMode = 'controller', pendingTouchPlacement = false;
+let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0;
+const cameraAvailable = isSecureContext && !!navigator.mediaDevices?.getUserMedia;
 const liveSampler = new LiveMotionSampler();
 const recorder = new MotionRecorder({onLimit:clip => { if (clip) acceptTake(clip); endXR(); }});
 const musicCapture = new MusicCapture({recorder, audio: captureAudio});
 let haveUserTake = false, demoVRMA = null, demoPlayer = null, takePlayer = null;
+const cameraSampler = new CameraPoseSampler();
+const cameraRecorder = new MotionRecorder({fps: 15, onLimit: clip => {
+  if(clip)acceptTake(clip);
+  endCamera({autoplay: true});
+}});
+const cameraMusic = new MusicCapture({recorder: cameraRecorder, audio: captureAudio});
+const viewerHome = document.createComment('live viewer home');
+$('stage').before(viewerHome);
+const cameraMotion = new CameraMotion({video: $('camera-video'), maxFps: 15,
+  onFrame(result, timeMs) {
+    if(!cameraActive || cameraBusy)return;
+    cameraTracking = cameraSampler.sample(result, timeMs);
+    const clip = cameraMusic.tick(timeMs, cameraTracking);
+    if(clip){acceptTake(clip);endCamera({autoplay: !cameraMusic.error, message: cameraMusic.error});}
+  },
+  onStatus(event) {
+    if(!cameraActive && !cameraBusy)return;
+    $('camera-status').textContent = event.message;
+    if(['hidden','ended','error'].includes(event.state))endCamera({autoplay: false, message: event.message});
+  },
+});
 
 function ready() { return !!vrm && !!demoVRMA && !loading; }
 function updateButtons() {
-  $('play').disabled = !ready() || xrBusy || !!session;
-  $('model').disabled = loading || !!session;
-  $('motion-file').disabled = !!session;
-  $('ar').disabled = !ready() || !arSupported || xrBusy || !!session;
-  $('record-xr').disabled = !ready() || !(arSupported || vrSupported) || xrBusy || !!session;
-  $('record-music').disabled = xrBusy || !!session;
-  $('music-check').disabled = !ready() || xrBusy || !!session;
-  $('take-play').disabled = !ready() || !selectedTake || !!session;
-  $('take-pause').disabled = !ready() || !selectedTake || activeSource !== 'take' || !!session;
-  $('take-music').disabled = !selectedTake?.accompaniment || !!session;
+  const cameraOpen = cameraActive || cameraBusy;
+  const busy = xrBusy || !!session || cameraOpen;
+  const headset = vrSupported || (arSupported && xrInputMode($('xr-input-mode').value, vrSupported) === 'controller');
+  $('play').disabled = !ready() || busy;
+  $('model').disabled = loading || busy;
+  $('motion-file').disabled = busy;
+  $('ar').disabled = !ready() || !arSupported || busy;
+  $('record-xr').disabled = !ready() || !headset || busy;
+  $('record-music').disabled = xrBusy || !!session || cameraMusic.pending || cameraRecorder.state==='recording';
+  $('music-check').disabled = !ready() || busy;
+  $('take-play').disabled = !ready() || !selectedTake || busy;
+  $('take-pause').disabled = !ready() || !selectedTake || activeSource !== 'take' || busy;
+  $('take-music').disabled = !selectedTake?.accompaniment || busy;
   $('take-download').disabled = !selectedTake || !ready();
   $('raw-download').disabled = !selectedTake || selectedTake.format!=='vli.motion-capture';
-  $('demo-motion').disabled = !demoVRMA || !!session;
-  $('seek').disabled = !!session;
+  $('demo-motion').disabled = !demoVRMA || busy;
+  $('demo-reset').disabled = busy;
+  $('seek').disabled = busy;
   $('exit-xr').hidden = !session;
   $('tracking-status').textContent = trackingSummary();
-  for (const id of ['placement-mode', 'width', 'distance']) $(id).disabled = !!session || xrBusy;
+  for (const id of ['xr-input-mode','placement-mode', 'width', 'distance']) $(id).disabled = busy;
+  $('camera-start').disabled = !ready() || !cameraAvailable || busy;
+  $('camera-record').disabled = !cameraActive || cameraBusy || !cameraMotion.ready;
+  $('camera-stop').hidden = !cameraOpen;
+  $('camera-stop').textContent = cameraRecorder.state==='recording' ? '保存してカメラを終了' : 'カメラを終了';
+  $('camera-facing').disabled = busy;
+  $('camera-delay').disabled = cameraMusic.pending || cameraRecorder.state==='recording';
 }
 function resetPose() {
   vrm?.humanoid.resetNormalizedPose();
@@ -147,6 +184,58 @@ async function resumeTake() {
     status('音楽を開始できません。「プレビューを再開」で再試行するか、収録時の音楽をオフにしてください。');
   }
 }
+async function startCamera() {
+  if(!ready() || session || xrBusy || cameraActive || cameraBusy)return;
+  stop();activeSource='demo';cameraBusy=true;cameraActive=true;cameraTracking=null;
+  const request=++cameraRequest;
+  cameraRecorder.cancel();cameraMusic.cancel();cameraMusic.error=null;cameraSampler.reset();
+  $('camera-panel').hidden=false;$('camera-avatar-slot').append($('stage'));
+  $('track-title').textContent='CAMERA MOTION / 推定';
+  camera.position.set(0,1.3,3.8);controls.target.set(0,.95,0);controls.update();
+  updateButtons();$('camera-studio').scrollIntoView({behavior:'smooth',block:'start'});
+  // Unlock the accompaniment in this button gesture before camera permission.
+  if($('record-music').checked)captureAudio.prepare().catch(()=>{});
+  try {
+    const started=await cameraMotion.start({facingMode:$('camera-facing').value});
+    if(request!==cameraRequest)return;
+    cameraBusy=false;
+    if(!started){endCamera({autoplay:false});return;}
+    $('camera-status').textContent='全身を映して動きを確認し、「収録を開始」を押してください。';
+  } catch(error) {
+    if(request!==cameraRequest)return;
+    const message=error.name==='NotAllowedError'?'カメラが許可されていません。ブラウザのカメラ権限を確認して、もう一度準備してください。'
+      :error.name==='NotFoundError'?'カメラが見つかりません。カメラのあるAndroidスマホで開いてください。'
+      :'カメラを準備できません。カメラを使う他のアプリを閉じ、通信とブラウザを確認してください。';
+    endCamera({autoplay:false,message});
+  } finally {if(request===cameraRequest)updateButtons();}
+}
+function endCamera({autoplay = true, message = ''} = {}) {
+  if(!cameraActive && !cameraBusy)return;
+  ++cameraRequest;cameraActive=false;cameraBusy=false;
+  const clip=cameraMusic.finish();
+  if(clip)acceptTake(clip);
+  const recorded=cameraRecorder.frameCount>0 && !!cameraRecorder.lastClip;
+  cameraMotion.stop();cameraTracking=null;
+  viewerHome.after($('stage'));$('camera-panel').hidden=true;$('camera-countdown').textContent='';
+  stop();restorePreview();
+  $('camera-record').textContent='収録を開始';
+  $('camera-status').textContent=message || (recorded?'カメラの推定モーションを保存しました。プレビュー・VRMAダウンロードができます。':'カメラを終了しました。');
+  updateButtons();
+  if(recorded)playTake({autoplay});
+}
+async function cameraRecordAction() {
+  if(!cameraActive || cameraBusy || !cameraMotion.ready)return;
+  if(cameraMusic.pending){cameraMusic.cancel();updateButtons();return;}
+  if(cameraRecorder.state==='recording'){endCamera();return;}
+  const arming=cameraMusic.arm({withMusic:$('record-music').checked,referenceSpaceType:'camera',countdownSeconds:Number($('camera-delay').value)});
+  updateButtons();await arming;updateButtons();
+}
+$('camera-start').onclick=startCamera;
+$('camera-record').onclick=cameraRecordAction;
+$('camera-stop').onclick=()=>endCamera();
+if(!cameraAvailable)$('camera-status').textContent='カメラ収録にはHTTPSとカメラ対応ブラウザが必要です。AndroidのChromeで開いてください。';
+window.addEventListener('pagehide',()=>{if(cameraActive || cameraBusy)endCamera({autoplay:false});});
+
 async function loadModel(url) {
   loading = true; stop(); updateButtons(); status('VRMを読み込んでいます…');
   try {
@@ -183,7 +272,7 @@ $('model').addEventListener('change', async event => {
   try{await loadModel(url);}finally{URL.revokeObjectURL(url);event.target.value='';}
 });
 $('play').onclick = playDemo;
-$('stop').onclick = () => {if(sessionMode==='record'){finishRecording();endXR();}else stop();status('停止しました。再生または位置調整ができます。');};
+$('stop').onclick = () => {if(cameraActive || cameraBusy){endCamera();return;}if(sessionMode==='record'){finishRecording();endXR();}else stop();status('停止しました。再生または位置調整ができます。');};
 $('take-play').onclick = playTake;
 $('take-pause').onclick = () => {
   if (activeSource !== 'take' || !selectedTake || session) return;
@@ -215,6 +304,8 @@ $('music-check').onclick = async () => {
 $('demo-motion').onclick = () => {if(demoVRMA){stop();acceptTake(demoVRMA);}};
 $('demo-reset').onclick = () => {stop();activeSource='demo';updateButtons();$('track-title').textContent='NEON DOOR';status('デモに戻しました。ライブを再生できます。');};
 $('volume').oninput = () => {const volume=Number($('volume').value);audio.volume=volume;captureAudio.setVolume(volume);};
+$('volume').addEventListener('input',()=>{$('xr-touch-volume').value=$('volume').value;});
+$('xr-touch-volume').oninput=()=>{const volume=Number($('xr-touch-volume').value);audio.volume=volume;captureAudio.setVolume(volume);$('volume').value=volume;};
 $('seek').oninput = () => {
   const time = Number($('seek').value);
   finished = false;
@@ -228,8 +319,8 @@ $('seek').oninput = () => {
     if (resume && time < duration()) resumeTake();
   }
 };
-audio.addEventListener('ended', () => {if(activeSource==='demo' && !musicAudition && sessionMode!=='record'){playing=false;finished=true;status('終演しました。もう一度再生できます。');}});
-audio.addEventListener('error', () => {if(activeSource==='demo' && !musicAudition && sessionMode!=='record'){stop();status('音源を読み込めません。接続を確認して再読み込みしてください。');}});
+audio.addEventListener('ended', () => {if(activeSource==='demo' && !cameraActive && !musicAudition && sessionMode!=='record'){playing=false;finished=true;status('終演しました。もう一度再生できます。');}});
+audio.addEventListener('error', () => {if(activeSource==='demo' && !cameraActive && !musicAudition && sessionMode!=='record'){stop();status('音源を読み込めません。接続を確認して再読み込みしてください。');}});
 for(const id of ['width','distance'])$(id).oninput = () => {
   $(id+'Value').textContent = Number($(id).value).toFixed(1)+' m';
   if(id==='width')stage.scale.setScalar(Number($(id).value)/2.4);
@@ -260,6 +351,7 @@ function acceptTake(clip) {
   $('take-music').checked = !!clip.accompaniment;
   if(clip.format==='vrma'&&vrm)takePlayer=createVRMAPlayer(vrm,clip);
   $('take-info').textContent = `${formatTime(clip.duration)} · ${clip.format==='vrma'?'VRM Animation 1.0':clip.frames.length+' フレーム · '+(clip.format==='vli.motion-capture'?(clip.tracking?.body==='browser-body'?'頭・手・身体関節の収録':'頭・手の収録（身体は推定）'):'旧形式の振り付け')}`;
+  if(clip.referenceSpace==='camera')$('take-info').textContent=`${formatTime(clip.duration)} · ${clip.frames.length} フレーム · カメラによる姿勢推定`;
   if (clip.accompaniment) $('take-info').textContent += ' · NEON DOORと同期';
   $('record-status').textContent = 'モーションを保存しました。プレビュー・ダウンロードできます。';
   updateButtons();
@@ -276,6 +368,7 @@ function finishRecording() {
 async function endXR() { if(session)await session.end().catch(()=>{}); }
 function restorePreview() {
   walls.end();pendingPlacement=false;xrInputReady=false;controls.enabled=true;
+  pendingTouchPlacement=false;$('xr-touch-overlay').hidden=true;
   stage.visible=true;stage.position.set(0,0,0);stage.rotation.set(0,0,0);
   stage.scale.setScalar(Number($('width').value)/2.4);
   motionPreview.reset();liveTracking = null;
@@ -283,6 +376,7 @@ function restorePreview() {
 }
 async function select(event) {
   if(!session || !ready() || !xrInputReady)return;
+  if(sessionMode==='live' && sessionInputMode==='touch')return;
   if (hud.select(event.frame, event.inputSource, renderer.xr.getReferenceSpace())) {
     finishRecording();await endXR();return;
   }
@@ -321,17 +415,17 @@ for(let i=0;i<2;i++) {
   grip.add(marker);scene.add(grip);
 }
 async function enterXR(mode) {
-  if(!ready() || session || xrBusy)return;
+  if(!ready() || session || xrBusy || cameraActive || cameraBusy)return;
   stop();xrBusy=true;xrInputReady=false;previewAfterXR=false;autoplayAfterXR=true;
   if (mode === 'record') {musicCapture.cancel();musicCapture.error=null;recorder.cancel();liveTracking=null;}
   else {activeSource = 'demo';$('track-title').textContent = 'NEON DOOR';}
   updateButtons();
-  const type = mode==='record' ? (vrSupported?'immersive-vr':'immersive-ar') : 'immersive-ar';
+  const options=xrSessionOptions({mode,vrSupported,preference:$('xr-input-mode').value,
+    placementMode:$('placement-mode').value,overlayRoot:$('xr-touch-overlay')});
+  const {type,inputMode}=options;sessionInputMode=inputMode;
   try {
     // requestSession is called directly inside the user gesture, before any await.
-    const features = mode === 'record' ? ['local-floor', 'hand-tracking', 'body-tracking']
-      : $('placement-mode').value === 'auto' ? ['local-floor', 'plane-detection', 'hit-test'] : ['local-floor'];
-    const request = navigator.xr.requestSession(type,{optionalFeatures: features});
+    const request = navigator.xr.requestSession(type,options.init);
     if(mode==='live')audio.play().then(()=>{if(!playing){audio.pause();audio.currentTime=0;}}).catch(()=>{});
     if(mode==='record' && $('record-music').checked)captureAudio.prepare().catch(()=>{});
     const next = await request;
@@ -346,6 +440,8 @@ async function enterXR(mode) {
     },{once:true});
     await renderer.xr.setSession(next);
     if (session !== next || !renderer.xr.isPresenting) return;
+    if(mode==='live' && inputMode==='touch' && !next.domOverlayState)throw new Error('Touch AR requires DOM overlay');
+    $('xr-touch-overlay').hidden=!(mode==='live' && inputMode==='touch');
     let reference=renderer.xr.getReferenceSpace();referenceSpaceType = 'local';
     if (mode === 'record') {
       try {
@@ -359,7 +455,7 @@ async function enterXR(mode) {
     }
     if (mode === 'live') {
       stage.visible = false;
-      walls.start(next, reference, {mode: $('placement-mode').value, width: Number($('width').value), distance: Number($('distance').value)});
+      walls.start(next, reference, {mode: $('placement-mode').value, inputMode, width: Number($('width').value), distance: Number($('distance').value)});
     }
     next.addEventListener('select', select);
     next.addEventListener('squeeze', reposition);
@@ -376,22 +472,37 @@ async function enterXR(mode) {
       } else stop(false);
     });
     xrInputReady = true;
-    status(mode==='record'?'トリガーで3秒後に収録開始。正面を見て両手を自然に構えてください。':'壁の候補を確認してトリガーで配置。もう一度押すと開演します。');
+    status(mode==='record'?'トリガーで3秒後に収録開始。正面を見て両手を自然に構えてください。':inputMode==='touch'?'画面中央を壁に向け、「ここに配置」をタップしてください。':'壁の候補を確認してトリガーで配置。もう一度押すと開演します。');
   } catch(error) {
     musicCapture.cancel();await endXR();session=null;sessionMode=null;restorePreview();
-    status('XRを開始できません。PICOブラウザ・HTTPS・権限を確認してください。');console.error(error);
+    status(inputMode==='touch'?'ARを開始できません。ARCore対応Android、Google Play開発者サービス（AR）、Chrome、カメラ権限を確認してください。3Dプレビューとカメラ収録も利用できます。':'XRを開始できません。PICOブラウザ・HTTPS・権限を確認してください。');console.error(error);
   } finally {xrBusy=false;updateButtons();}
 }
 $('ar').onclick = () => enterXR('live');
 $('record-xr').onclick = () => enterXR('record');
 $('exit-xr').onclick = () => {finishRecording();endXR();};
+$('xr-input-mode').onchange=()=>{updateButtons();updateXRLabels();};
+// Do not let a DOM button tap also generate WebXR select on the stage.
+$('xr-touch-overlay').addEventListener('beforexrselect',event=>event.preventDefault());
+$('xr-touch-place').onclick=()=>{if(sessionMode==='live' && xrInputReady && !walls.placed)pendingTouchPlacement=true;};
+$('xr-touch-play').onclick=()=>{if(sessionMode==='live' && walls.placed && walls.report.tracking){if(playing)stop();else playDemo();}};
+$('xr-touch-reset').onclick=()=>{
+  if(sessionMode!=='live')return;
+  stop();pendingTouchPlacement=false;stage.visible=false;walls.reset();
+};
+$('xr-touch-mode').onclick=()=>{
+  if(sessionMode!=='live')return;
+  stop();pendingTouchPlacement=false;stage.visible=false;walls.reset({mode:walls.mode==='auto'?'distance':'auto'});
+};
+$('xr-touch-exit').onclick=endXR;
 renderer.xr.addEventListener('sessionend', () => {
   resize();
   if (previewAfterXR) {previewAfterXR = false;playTake({autoplay: autoplayAfterXR});}
 });
 $('xr-diagnostics').onclick = () => {
   const data = {timestamp: new Date().toISOString(), userAgent: navigator.userAgent,
-    secureContext: isSecureContext, arSupported, vrSupported, wall: walls.diagnostics(), tracking: trackingReport};
+    secureContext: isSecureContext, arSupported, vrSupported, inputMode:sessionInputMode, wall: walls.diagnostics(), tracking: trackingReport,
+    camera:{available:cameraAvailable,active:cameraActive,quality:cameraTracking?.quality ?? null,bodyCount:cameraTracking?.bodyCount ?? 0}};
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
   const link = document.createElement('a');link.href=url;link.download='vli-ar-diagnostics.json';link.click();
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
@@ -399,9 +510,13 @@ $('xr-diagnostics').onclick = () => {
 async function detectXR() {
   try {
     if(navigator.xr) [arSupported,vrSupported] = await Promise.all(['immersive-ar','immersive-vr'].map(mode=>navigator.xr.isSessionSupported(mode).catch(()=>false)));
-    $('ar').textContent = arSupported?'ARでステージを開く ↗':'この環境はAR非対応';
-    $('record-xr').textContent = arSupported||vrSupported?'PICOでモーションを収録':'収録にはWebXR対応HMDが必要';
+    updateXRLabels();
   } finally {updateButtons();}
+}
+function updateXRLabels() {
+  const input=xrInputMode($('xr-input-mode').value,vrSupported);
+  $('ar').textContent=arSupported?(input==='touch'?'スマホARでステージを開く ↗':'ARでステージを開く ↗'):'この環境はAR非対応';
+  $('record-xr').textContent=vrSupported || (arSupported && input==='controller')?'HMDでモーションを収録':'HMD収録には対応ヘッドセットが必要';
 }
 
 $('motion-file').onchange = async event => {
@@ -433,6 +548,7 @@ restoreTake().then(async data => {
   $('take-music').checked=!!clip.accompaniment;
   if(clip.format==='vrma'&&vrm)takePlayer=createVRMAPlayer(vrm,clip);
   $('take-info').textContent=`前回のモーション · ${formatTime(clip.duration)} · ${clip.format==='vrma'?'VRMA':clip.frames.length+' フレーム'}`;
+  if(clip.referenceSpace==='camera')$('take-info').textContent+=' · カメラによる姿勢推定';
   if(clip.accompaniment)$('take-info').textContent+=' · NEON DOORと同期';
   updateButtons();
 }).catch(()=>{});
@@ -451,9 +567,17 @@ renderer.setAnimationLoop((time,frame) => {
   }
   if(sessionMode==='live' && xrInputReady && frame) {
     walls.update(frame);
+    if(pendingTouchPlacement) {
+      pendingTouchPlacement=false;
+      const placement=walls.confirm(frame,null);
+      if(placement){stage.position.copy(placement.position);stage.quaternion.copy(placement.quaternion);stage.scale.setScalar(placement.width/2.4);}
+    }
     if (!walls.report.tracking && playing) stop(false);
     // Hide stale spatial content while positional tracking is unavailable.
     stage.visible = !!walls.placed && !!walls.report.tracking;
+  }
+  if(cameraActive && cameraRecorder.state==='recording' && cameraMusic.withMusic && (captureAudio.time>=captureAudio.duration || !captureAudio.ready)) {
+    endCamera({autoplay:captureAudio.ready,message:!captureAudio.ready?'音声が中断されたため、ここまでの収録を保存しました。':''});
   }
   if(sessionMode==='record' && xrInputReady && frame) {
     liveTracking = liveSampler.sampleFrame(time,frame,renderer.xr.getReferenceSpace());
@@ -476,17 +600,20 @@ renderer.setAnimationLoop((time,frame) => {
     } else {previewTime=duration();captureAudio.stop();playing=false;finished=true;}
   }
   const t=playbackTime();
-  const demoActive=sessionMode!=='record' && activeSource==='demo' && (playing || finished || t>0);
-  const state=demoActive?cue(finished?DURATION:t):{label:sessionMode==='record'?'LIVE TRACKING':activeSource==='take'?'MOTION PREVIEW':'STANDBY',curtain:0};
+  const demoActive=!cameraActive && sessionMode!=='record' && activeSource==='demo' && (playing || finished || t>0);
+  const state=demoActive?cue(finished?DURATION:t):{label:cameraActive?'CAMERA / 推定':sessionMode==='record'?'LIVE TRACKING':activeSource==='take'?'MOTION PREVIEW':'STANDBY',curtain:0};
   curtain.visible=state.curtain>.001;curtain.scale.y=Math.max(.001,state.curtain);curtain.position.y=2.5-1.25*state.curtain;
   if(vrm && demoVRMA) {
-    const previewing = sessionMode === 'record' || (!session && activeSource === 'take');
+    const previewing = cameraActive || sessionMode === 'record' || (!session && activeSource === 'take');
     motionPreview.show(vrm, previewing);
-    vrm.scene.visible = sessionMode !== 'record' || (xrInputReady && !pendingPlacement && !!liveTracking?.sample?.head);
+    vrm.scene.visible = cameraActive ? !!cameraTracking?.sample?.head : sessionMode !== 'record' || (xrInputReady && !pendingPlacement && !!liveTracking?.sample?.head);
     if (sessionMode === 'record' && (!xrInputReady || pendingPlacement)) motionPreview.room.visible = false;
     if (previewing) stage.visible = false;
     else if (!session) stage.visible = true;
-    if(sessionMode==='record') {
+    if(cameraActive) {
+      if(cameraTracking)applyMotionSampleToVRM(vrm,cameraTracking.sample,cameraTracking);
+      else resetPose();
+    } else if(sessionMode==='record') {
       if (liveTracking) applyMotionSampleToVRM(vrm,liveTracking.sample,liveTracking);
       else resetPose();
     } else if(activeSource==='take' && selectedTake && !session) {
@@ -501,6 +628,16 @@ renderer.setAnimationLoop((time,frame) => {
     $('phase').textContent=state.label;$('time').textContent=formatTime(t);$('duration').textContent=formatTime(duration());
     $('seek').max=duration();$('seek').value=t;
     $('take-pause').textContent = playing && activeSource === 'take' ? 'プレビューを一時停止' : 'プレビューを再開';
+    if(cameraActive && !cameraBusy) {
+      const recording=cameraRecorder.state==='recording';
+      const countdown=cameraMusic.countdownAt;
+      const count=countdown!==null?Math.max(0,Math.ceil((countdown-performance.now())/1000)):null;
+      $('camera-countdown').textContent=recording?`● ${formatTime(cameraRecorder.duration)}`:count>0?String(count):count===0?'全身を映してください':'';
+      $('camera-record').textContent=recording?'保存して終了':cameraMusic.pending?'開始をキャンセル':'収録を開始';
+      const tracked=!!cameraTracking?.sample?.head;
+      $('camera-status').textContent=cameraMusic.error || (cameraMusic.preparing?'音楽を準備しています…':recording?`収録中 ${formatTime(cameraRecorder.duration)} / ${cameraMusic.withMusic?'01:12':'03:00'} · ${cameraRecorder.frameCount}フレーム · ${tracked?'カメラで姿勢を推定中':'身体を見失いました。全身を映してください。'}`:count!==null?(count>0?`${count}秒後に開始します。全身が映る位置へ移動してください。`:'身体の検出を待っています。顔・肩・腰を画面内へ。'):tracked?`カメラ推定 ${cameraTracking.bodyCount}関節。動きを確認して収録を開始してください。`:'顔・肩・腰を画面内へ。全身が映る位置にスマホを固定してください。');
+      updateButtons();
+    }
     if(sessionMode==='record') {
       updateTrackingReport();
       const recording=recorder.state==='recording';
@@ -515,7 +652,14 @@ renderer.setAnimationLoop((time,frame) => {
       if(recorder.state!=='complete')$('record-status').textContent=recording?`${title} · ${recorder.frameCount} フレーム`:detail;
     } else if(session) {
       const [title, detail] = walls.guidance();
-      hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:title,playing?'トリガーで停止 · グリップで再配置':detail,true);
+      hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:title,playing?'トリガーで停止 · グリップで再配置':detail,sessionInputMode!=='touch');
+      if(sessionInputMode==='touch') {
+        $('xr-touch-status').textContent=playing?`${formatTime(t)} / ${formatTime(DURATION)} · ライブ再生中`:`${title}。${detail}`;
+        $('xr-touch-place').disabled=!!walls.placed || !walls.candidate || !walls.report.tracking;
+        $('xr-touch-play').disabled=!walls.placed || !walls.report.tracking;
+        $('xr-touch-play').textContent=playing?'ライブを停止':'ライブを再生';
+        $('xr-touch-mode').textContent=walls.mode==='auto'?'距離指定へ':'壁の自動検出へ';
+      }
       const report = walls.diagnostics();
       $('wall-status').textContent = `${title}。${detail}（平面 ${report.planes} / 垂直面 ${report.verticalPlanes}）`;
     }

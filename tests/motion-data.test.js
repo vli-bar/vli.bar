@@ -218,6 +218,62 @@ test('sampling interpolates positions and shortest quaternion arcs without fabri
   assert.equal(sampleMotionClip(clip, .5).head, null);
 });
 
+function sparseTake(referenceSpace = 'camera', interval = .2, fps = 15) {
+  const clip = take();
+  clip.referenceSpace = referenceSpace;
+  clip.fps = fps;
+  clip.duration = interval;
+  clip.frames = [clip.frames[0], { ...clip.frames[2], t: interval }];
+  for (const frame of clip.frames) frame.body = { hips: { ...frame.head, position: [frame.head.position[0], -.6, 0] } };
+  return validateMotionClip(clip);
+}
+
+test('camera preview tolerates 5fps inference under a 15fps sampling ceiling while XR remains strict', () => {
+  const camera = sparseTake();
+  const sampled = sampleMotionClip(camera, .1);
+  assert.equal(sampled.visibility, 'visible');
+  assert.ok(Math.abs(sampled.head.position[0] - .1) < 1e-9);
+  assert.ok(Math.abs(sampled.body.hips.position[0] - .1) < 1e-9);
+  assert.equal(sampled.head.source, 'camera-pose');
+  assert.equal(sampled.head.emulatedPosition, true);
+  const xr = sampleMotionClip(sparseTake('local-floor'), .1);
+  assert.equal(xr.head, null);
+  assert.equal(xr.body, null);
+  assert.equal(xr.visibility, 'hidden');
+});
+
+test('camera interpolation permits the 500ms boundary but never bridges longer intervals', () => {
+  assert.ok(sampleMotionClip(sparseTake('camera', .5), .25).head);
+  for (const fps of [1, 15, 60]) {
+    const sampled = sampleMotionClip(sparseTake('camera', .500001, fps), .25);
+    assert.equal(sampled.head, null);
+    assert.equal(sampled.body, null);
+    assert.equal(sampled.visibility, 'hidden');
+  }
+});
+
+test('camera interpolation still refuses explicit missing head, body, hand, or hidden frames', () => {
+  const camera = sparseTake('camera', .4);
+  const gap = { t: .2, visibility: 'visible', head: null, left: null, right: null, body: null };
+  camera.frames.splice(1, 0, gap);
+  for (const time of [.1, .2, .3]) {
+    const sampled = sampleMotionClip(camera, time);
+    assert.equal(sampled.head, null);
+    assert.equal(sampled.left, null);
+    assert.equal(sampled.body, null);
+  }
+  gap.visibility = 'hidden';
+  for (const time of [.1, .3]) assert.equal(sampleMotionClip(camera, time).visibility, 'hidden');
+
+  const partial = sparseTake('camera', .2);
+  partial.frames[1].left = null;
+  partial.frames[1].body = null;
+  const sampled = sampleMotionClip(partial, .1);
+  assert.ok(sampled.head, 'an intact head does not depend on an unrelated missing hand');
+  assert.equal(sampled.left, null);
+  assert.equal(sampled.body, null);
+});
+
 test('capture retargeting keeps the stage transform intact and moves arms toward recorded hands', () => {
   const scene = new THREE.Group();
   scene.position.set(3, 0, -2);

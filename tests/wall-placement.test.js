@@ -24,12 +24,12 @@ function frame({ planes = [], hits = [], viewer = pose() } = {}) {
     getHitTestResults: () => hits.map(value => ({ getPose: () => value })),
   };
 }
-function fixture({ mode = 'auto', width = 2.4, distance = 2, session: extra = {} } = {}) {
+function fixture({ mode = 'auto', width = 2.4, distance = 2, inputMode = 'controller', session: extra = {} } = {}) {
   const scene = new THREE.Scene();
   const session = { visibilityState: 'visible', enabledFeatures: [], ...extra };
   const placement = new WallPlacement(scene);
   const referenceSpace = { type: 'local' };
-  placement.start(session, referenceSpace, { mode, width, distance });
+  placement.start(session, referenceSpace, { mode, width, distance, inputMode });
   return { placement, session, scene, referenceSpace };
 }
 const close = (actual, expected, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} ≈ ${expected}`);
@@ -278,4 +278,111 @@ test('distance fallback is explicitly undetected placement, and grip reset clear
   assert.match(placement.guidance()[0], /1\/3.*左下/);
   placement.end();
   assert.equal(placement.confirm(xrFrame, null, 1010), null);
+});
+
+test('touch confirmation uses the screen-center wall candidate without a controller pose', () => {
+  const { placement } = fixture({ inputMode: 'touch' });
+  const xrFrame = frame({ planes: [plane('centered wall', [0, 1.6, -2])] });
+  placement.update(xrFrame, 1000);
+  assert.match(placement.guidance().join(' '), /画面中央.*配置ボタン/);
+  assert.doesNotMatch(placement.guidance().join(' '), /トリガー|グリップ|3点指定/);
+  // A DOM overlay action does not have a controller targetRaySpace. The cached
+  // fresh center candidate is sufficient; no tap coordinate is used as a pose.
+  xrFrame.getPose = () => { throw new Error('No controller pose is available on a phone'); };
+  const result = placement.confirm(xrFrame, null, 1010);
+  assert.equal(result.source, 'plane-detection');
+  close(result.position.x, 0); close(result.position.z, -2);
+  assert.equal(placement.diagnostics().inputMode, 'touch');
+  assert.equal(placement.diagnostics().mode, 'auto');
+  assert.match(placement.guidance().join(' '), /再生ボタン.*再配置ボタン/);
+  assert.doesNotMatch(placement.guidance().join(' '), /トリガー|グリップ/);
+});
+
+test('touch manual requests fall back to explicit distance placement on start and reset', () => {
+  const { placement } = fixture({ inputMode: 'touch', mode: 'manual', width: 1.2, distance: 3 });
+  assert.equal(placement.mode, 'distance');
+  assert.equal(placement.diagnostics().mode, 'distance');
+  assert.equal(placement.diagnostics().inputMode, 'touch');
+  assert.equal(placement.diagnostics().hitTest, 'disabled');
+  const xrFrame = frame();
+  placement.update(xrFrame, 1000);
+  assert.match(placement.guidance()[0], /壁検出なし/);
+  const result = placement.confirm(xrFrame, null, 1000);
+  assert.equal(result.source, 'distance'); close(result.position.z, -3); close(result.width, 1.2);
+  placement.reset({ mode: 'manual' });
+  assert.equal(placement.mode, 'distance'); assert.equal(placement.placed, null);
+  assert.equal(placement.diagnostics().placementSource, undefined);
+  placement.reset({ switchToManual: true });
+  assert.equal(placement.mode, 'distance'); assert.equal(placement.points.length, 0);
+  placement.reset({ mode: 'auto' });
+  assert.equal(placement.mode, 'auto');
+  placement.reset({ mode: 'distance' });
+  assert.equal(placement.mode, 'distance');
+  const downward = frame({ viewer: pose([0, 1.6, 0], new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2)) });
+  placement.update(downward, 1010);
+  assert.equal(placement.candidate, null);
+  assert.match(placement.guidance().join(' '), /スマホを正面/);
+  assert.doesNotMatch(placement.guidance().join(' '), /壁情報を取得できません|コントローラー/);
+});
+
+test('touch unavailable geometry and room capture failures explain distance controls', async () => {
+  const { placement } = fixture({ inputMode: 'touch' });
+  const xrFrame = frame(); delete xrFrame.detectedPlanes;
+  placement.update(xrFrame, 1000);
+  assert.equal(placement.candidate, null);
+  assert.match(placement.guidance().join(' '), /距離指定/);
+  assert.doesNotMatch(placement.guidance().join(' '), /グリップ|3点指定/);
+  placement.confirm(xrFrame, null, 1000);
+  assert.match(placement.guidance().join(' '), /距離指定/);
+
+  const failing = fixture({ inputMode: 'touch', session: { initiateRoomCapture: async () => {
+    throw Object.assign(new Error('unavailable'), { name: 'NotSupportedError' });
+  } } }).placement;
+  failing.update(frame(), 1000);
+  assert.match(failing.guidance().join(' '), /画面中央.*配置ボタン/);
+  failing.confirm(frame(), null, 1000);
+  await setImmediate();
+  assert.match(failing.guidance().join(' '), /部屋スキャンを利用できません.*距離指定/);
+  assert.doesNotMatch(failing.guidance().join(' '), /トリガー|グリップ|3点指定/);
+});
+
+test('switching between auto and distance disposes obsolete asynchronous hit sources', async () => {
+  const first = deferred(), second = deferred();
+  let requests = 0, oldCanceled = 0, currentCanceled = 0;
+  const viewerSpace = { type: 'viewer' };
+  const { placement } = fixture({ inputMode: 'touch', session: {
+    requestReferenceSpace: async type => { assert.equal(type, 'viewer'); return viewerSpace; },
+    requestHitTestSource: options => {
+      assert.deepEqual(options, { space: viewerSpace, entityTypes: ['plane'] }, 'hit-test remains centered on the viewer, without a screen tap ray');
+      return ++requests === 1 ? first.promise : second.promise;
+    },
+  } });
+  await setImmediate();
+  placement.reset({ mode: 'distance' });
+  assert.equal(placement.diagnostics().hitTest, 'disabled');
+  placement.reset({ mode: 'auto' });
+  await setImmediate();
+  const current = { cancel() { currentCanceled++; } };
+  second.resolve(current); await setImmediate();
+  assert.equal(placement.hitSource, current);
+  first.resolve({ cancel() { oldCanceled++; } }); await setImmediate();
+  assert.equal(oldCanceled, 1); assert.equal(currentCanceled, 0);
+  assert.equal(placement.hitSource, current, 'late result from the old mode cannot replace the active source');
+  assert.equal(placement.diagnostics().hitTest, 'available');
+  placement.reset({ mode: 'distance' });
+  assert.equal(currentCanceled, 1); assert.equal(placement.hitSource, null);
+  placement.end();
+  assert.equal(currentCanceled, 1, 'canceled sources are not retained for another cancel');
+});
+
+test('a viewer-space request finishing after a touch mode change does not request a source', async () => {
+  const pendingSpace = deferred(); let sourceRequests = 0;
+  const { placement } = fixture({ inputMode: 'touch', session: {
+    requestReferenceSpace: () => pendingSpace.promise,
+    requestHitTestSource: async () => { sourceRequests++; return { cancel() {} }; },
+  } });
+  placement.reset({ mode: 'distance' });
+  pendingSpace.resolve({}); await setImmediate();
+  assert.equal(sourceRequests, 0); assert.equal(placement.hitSource, null);
+  assert.equal(placement.diagnostics().hitTest, 'disabled');
 });
