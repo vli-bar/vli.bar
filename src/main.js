@@ -24,6 +24,7 @@ import { LivePerformer, liveTrackingFrame } from './live-performer.js';
 import { createLivePresence, sampleAudiencePose } from './live-presence.js';
 import { discoverLocalVenue } from './local-venue.js';
 import { resolvePlaybackSource, canResumeTake, startTakePlayback, applyPlaybackMotion } from './playback-source.js';
+import { LatestLoad } from './latest-load.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -59,7 +60,7 @@ const audio = new Audio(asset('demo/neon-door.wav'));
 audio.preload = 'auto'; audio.volume = .6;
 const captureAudio = new CaptureAudio({url: asset('demo/neon-door.wav'), volume: .6});
 const clock = new THREE.Clock();
-let vrm = null, restHips = null, loading = false;
+let vrm = null, restHips = null, loading = true;
 let session = null, sessionMode = null, xrBusy = false, arSupported = false, vrSupported = false;
 let playing = false, finished = false, playRequest = 0, selectedTake = null, activeSource = 'demo', musicAudition = false;
 let playbackChoice = 'demo', playbackChoiceMade = false;
@@ -68,6 +69,8 @@ let referenceSpaceType = 'local', liveTracking = null, previewAfterXR = false, a
 let sessionInputMode = 'controller', pendingTouchPlacement = false;
 let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0, cameraObservedAt = -Infinity;
 const cameraAvailable = isSecureContext && !!navigator.mediaDevices?.getUserMedia;
+const modelLoad = new LatestLoad({onChange() {loading = modelLoad.pending;updateButtons();}});
+const motionLoad = new LatestLoad();
 let liveRole = null, liveDevice = 'desktop', livePoseSentAt = -Infinity, sharedHead = false, localVenue = null;
 const livePerformer = new LivePerformer();
 const livePresence = createLivePresence(scene, stage);
@@ -104,6 +107,7 @@ function liveDeviceChoice() {
 $('lan-form').onsubmit = async event => {
   event.preventDefault();
   if (!localVenue || session || xrBusy || cameraActive || cameraBusy || !ready()) return;
+  motionLoad.cancel();
   liveRole = $('lan-role').value; liveDevice = liveDeviceChoice(); livePoseSentAt = -Infinity;
   try {
     await liveRoom.connect({url: localVenue.origin, room: $('lan-room').value.trim(), token: $('lan-token').value,
@@ -155,7 +159,8 @@ const cameraMotion = new CameraMotion({video: $('camera-video'), maxFps: 15,
 function ready() { return !!vrm && !!demoVRMA && !loading; }
 function updateButtons() {
   const cameraOpen = cameraActive || cameraBusy;
-  const busy = xrBusy || !!session || cameraOpen;
+  const joining = liveRoom.state === 'connecting';
+  const busy = xrBusy || !!session || cameraOpen || joining;
   const headset = vrSupported || (arSupported && xrInputMode($('xr-input-mode').value, vrSupported) === 'controller');
   const viewingLAN = watchingLAN();
   $('stop').textContent = viewingLAN ? 'LANから退出' : '停止・リセット';
@@ -189,7 +194,6 @@ function updateButtons() {
   $('camera-stop').textContent = cameraRecorder.state==='recording' ? '保存してカメラを終了' : 'カメラを終了';
   $('camera-facing').disabled = busy;
   $('camera-delay').disabled = cameraMusic.pending || cameraRecorder.state==='recording';
-  const joining = liveRoom.state === 'connecting';
   for (const id of ['lan-url','lan-room','lan-token','lan-name','lan-role','lan-device']) $(id).disabled = !localVenue || liveRoom.connected || joining;
   $('lan-connect').disabled = !localVenue || !ready() || busy || liveRoom.connected || joining;
   $('lan-disconnect').disabled = !liveRoom.connected && !joining;
@@ -221,11 +225,14 @@ function stop(reset = true) {
   // Preserve the take's clock before stopping its accompaniment, including
   // pauses caused by XR visibility or tracking loss.
   if (!reset && activeSource === 'take') previewTime = playbackTime();
+  motionLoad.cancel();
+  const wasAudition = musicAudition;
   ++playRequest;
   captureAudio.stop();
   musicAudition = false;$('music-check').textContent = '収録用の曲を試聴';
   audio.pause(); playing = false; finished = false;
   if(reset){audio.currentTime = 0; previewTime = 0; resetPose();}
+  if (wasAudition) {activeSource = resolvePlaybackSource(playbackChoice, selectedTake, {watchingLAN: watchingLAN()});updateTrackTitle();updateButtons();}
 }
 async function playDemo({restart = true} = {}) {
   if(!ready() || watchingLAN())return;
@@ -236,10 +243,11 @@ async function playDemo({restart = true} = {}) {
   const request = ++playRequest;
   try {
     await audio.play();
-    if(request !== playRequest){audio.pause();return;}
+    if(request !== playRequest)return;
     playing = true;
     status('NEON DOOR — オリジナル音源と振り付けを再生中。');
   } catch {
+    if(request !== playRequest)return;
     status('音声を開始できませんでした。ライブを再生ボタンをもう一度押してください。');
   }
 }
@@ -263,6 +271,7 @@ async function resumeTake() {
     visibility: session?.visibilityState ?? document.visibilityState,
   });
   if (!isCurrent()) return;
+  motionLoad.cancel();
   if (previewTime >= duration()) previewTime = 0;
   try {
     const withMusic = takeWithMusic();
@@ -287,7 +296,7 @@ function toggleStagePlayback() {
   return playDemo({restart: false});
 }
 async function startCamera() {
-  if(!ready() || watchingLAN() || session || xrBusy || cameraActive || cameraBusy)return;
+  if(!ready() || watchingLAN() || liveRoom.state === 'connecting' || session || xrBusy || cameraActive || cameraBusy)return;
   stop();activeSource='demo';cameraBusy=true;cameraActive=true;cameraTracking=null;cameraObservedAt=-Infinity;
   const request=++cameraRequest;
   cameraRecorder.cancel();cameraMusic.cancel();cameraMusic.error=null;cameraSampler.reset();
@@ -319,7 +328,7 @@ function endCamera({autoplay = true, message = ''} = {}) {
   const recorded=cameraRecorder.frameCount>0 && !!cameraRecorder.lastClip;
   cameraMotion.stop();cameraTracking=null;
   viewerHome.after($('stage'));$('camera-panel').hidden=true;$('camera-countdown').textContent='';
-  stop();restorePreview();
+  stop();activeSource = resolvePlaybackSource(playbackChoice, selectedTake, {watchingLAN: watchingLAN()});updateTrackTitle();restorePreview();
   $('camera-record').textContent='収録を開始';
   $('camera-status').textContent=message || (recorded?'カメラの推定モーションを保存しました。プレビュー・VRMAダウンロードができます。':'カメラを終了しました。');
   updateButtons();
@@ -339,33 +348,42 @@ if(!cameraAvailable)$('camera-status').textContent='カメラ収録にはHTTPS�
 window.addEventListener('pagehide',()=>{if(cameraActive || cameraBusy)endCamera({autoplay:false});});
 
 async function loadModel(url) {
-  loading = true; stop(); updateButtons(); status('VRMを読み込んでいます…');
+  stop();status('VRMを読み込んでいます…');
   try {
-    const gltf = await loader.loadAsync(url);
-    const next = gltf.userData.vrm;
-    if(!next)throw new Error('VRMではありません');
-    VRMUtils.rotateVRM0(next);
-    const bounds = new THREE.Box3().setFromObject(next.scene);
-    const height = bounds.max.y - bounds.min.y;
-    if(!Number.isFinite(height) || height < .01)throw new Error('モデルのサイズが不正です');
-    next.scene.scale.setScalar(1.8 / height);
-    next.scene.position.set(0, -bounds.min.y * 1.8 / height, -1.1);
-    next.scene.traverse(object => {
-      if(!object.isMesh)return;
-      object.frustumCulled = false; object.renderOrder = 3;
-      for(const material of (Array.isArray(object.material) ? object.material : [object.material]))stencil(material);
-    });
-    if(vrm){vrm.scene.removeFromParent(); VRMUtils.deepDispose(vrm.scene);}
-    demoPlayer?.dispose();takePlayer?.dispose();
-    vrm = next; stage.add(vrm.scene);
-    demoPlayer = demoVRMA ? createVRMAPlayer(vrm,demoVRMA) : null;
-    takePlayer = selectedTake?.format==='vrma' ? createVRMAPlayer(vrm,selectedTake) : null;
-    restHips = vrm.humanoid.getNormalizedBoneNode('hips').position.clone();
-    status('準備できました。ライブを再生すると幕が上がります。');
+    await modelLoad.run(() => loader.loadAsync(url), gltf => {
+      const next = gltf.userData.vrm;
+      let nextDemoPlayer = null, nextTakePlayer = null, nextRestHips;
+      try {
+        if(!next)throw new Error('VRMではありません');
+        VRMUtils.rotateVRM0(next);
+        const bounds = new THREE.Box3().setFromObject(next.scene);
+        const height = bounds.max.y - bounds.min.y;
+        const hips = next.humanoid.getNormalizedBoneNode('hips');
+        if(!Number.isFinite(height) || height < .01 || !hips)throw new Error('モデルのサイズまたはHumanoidが不正です');
+        nextRestHips = hips.position.clone();
+        next.scene.scale.setScalar(1.8 / height);
+        next.scene.position.set(0, -bounds.min.y * 1.8 / height, -1.1);
+        next.scene.traverse(object => {
+          if(!object.isMesh)return;
+          object.frustumCulled = false; object.renderOrder = 3;
+          for(const material of (Array.isArray(object.material) ? object.material : [object.material]))stencil(material);
+        });
+        // Validate the new players before releasing the working model.
+        nextDemoPlayer = demoVRMA ? createVRMAPlayer(next,demoVRMA) : null;
+        nextTakePlayer = selectedTake?.format==='vrma' ? createVRMAPlayer(next,selectedTake) : null;
+      } catch(error) {
+        nextDemoPlayer?.dispose();nextTakePlayer?.dispose();VRMUtils.deepDispose(gltf.scene);throw error;
+      }
+      demoPlayer?.dispose();takePlayer?.dispose();
+      if(vrm){vrm.scene.removeFromParent();VRMUtils.deepDispose(vrm.scene);}
+      vrm = next;stage.add(vrm.scene);
+      demoPlayer = nextDemoPlayer;takePlayer = nextTakePlayer;restHips = nextRestHips;
+      status('準備できました。ライブを再生すると幕が上がります。');
+    }, {discard: gltf => VRMUtils.deepDispose(gltf.scene)});
   } catch(error) {
     status('VRMを読み込めませんでした。別のVRMファイルを選択してください。');
     console.error(error);
-  } finally {loading = false; updateButtons();}
+  }
 }
 $('model').addEventListener('change', async event => {
   const file = event.target.files[0]; if(!file)return;
@@ -393,19 +411,20 @@ $('take-music').onchange = () => {
 $('music-check').onclick = async () => {
   if (session || xrBusy) return;
   if (musicAudition) {stop();$('record-status').textContent='試聴を停止しました。';status('試聴を停止しました。');return;}
-  stop();activeSource='demo';updateButtons();
+  stop();activeSource='demo';musicAudition=true;playbackChoiceMade=true;updateTrackTitle();updateButtons();
+  $('music-check').textContent='試聴を停止';
   $('record-status').textContent='収録用の音楽を準備しています…';
   const request = ++playRequest;
   try {
     await captureAudio.prepare();
     if (request !== playRequest || session || xrBusy) return;
     captureAudio.play(0);
-    musicAudition=true;playing=true;
+    playing=true;
     $('music-check').textContent='試聴を停止';
     $('track-title').textContent='NEON DOOR';
     $('record-status').textContent='NEON DOORを試聴中。音量はプレビュー画面で調整できます。';
     status('収録用の曲 NEON DOOR を試聴中。音量を調整できます。「停止・リセット」で止まります。');
-  } catch { if(request===playRequest){$('record-status').textContent='音楽を準備できません。接続と音声許可を確認して再試行してください。';status($('record-status').textContent);} }
+  } catch { if(request===playRequest){stop();$('record-status').textContent='音楽を準備できません。接続と音声許可を確認して再試行してください。';status($('record-status').textContent);} }
 };
 $('demo-motion').onclick = () => {if(demoVRMA){stop();acceptTake(demoVRMA);}};
 $('demo-reset').onclick = () => {choosePlayback('demo');status('デモに戻しました。ライブを再生できます。');};
@@ -524,7 +543,7 @@ for(let i=0;i<2;i++) {
   grip.add(marker);scene.add(grip);
 }
 async function enterXR(mode) {
-  if(!ready() || session || xrBusy || cameraActive || cameraBusy)return;
+  if(!ready() || session || xrBusy || cameraActive || cameraBusy || liveRoom.state === 'connecting')return;
   if(mode === 'record' && watchingLAN())return;
   stop();xrBusy=true;xrInputReady=false;previewAfterXR=false;autoplayAfterXR=true;
   if (mode === 'record') {musicCapture.cancel();musicCapture.error=null;recorder.cancel();liveTracking=null;}
@@ -633,15 +652,24 @@ function updateXRLabels() {
 
 $('motion-file').onchange = async event => {
   const file = event.target.files[0];if(!file)return;
+  // Clear the picker immediately so selecting the same file can start a new
+  // request; an old completion must never clear a newer picker selection.
+  event.target.value='';
+  stop();
   try {
-    if(file.name.toLowerCase().endsWith('.vrma')){if(file.size>20*1024*1024)throw new Error('VRMAは20MB以内にしてください。');const clip=await parseVRMA(await file.arrayBuffer());stop();acceptTake(clip);return;}
-    if(file.size>MAX_MOTION_FILE_BYTES || file.size===0)throw new Error('JSONは32MB以内にしてください。');
-    const data = JSON.parse(await file.text());
-    const clip = data.format === 'vli.motion-capture' ? validateMotionClip(data) : validateDemoMotion(data);
-    stop();acceptTake(clip);
-    $('take-info').textContent += ` · ${file.name}`;
+    await motionLoad.run(async () => {
+      if(file.name.toLowerCase().endsWith('.vrma')) {
+        if(file.size>20*1024*1024)throw new Error('VRMAは20MB以内にしてください。');
+        return parseVRMA(await file.arrayBuffer());
+      }
+      if(file.size>MAX_MOTION_FILE_BYTES || file.size===0)throw new Error('JSONは32MB以内にしてください。');
+      const data = JSON.parse(await file.text());
+      return data.format === 'vli.motion-capture' ? validateMotionClip(data) : validateDemoMotion(data);
+    }, clip => {
+      acceptTake(clip);
+      $('take-info').textContent += ` · ${file.name}`;
+    });
   } catch(error) {$('take-info').textContent=`読み込み失敗: ${error.message}`;}
-  finally {event.target.value='';}
 };
 $('take-download').onclick = () => {
   if(!selectedTake||!vrm)return;
@@ -653,9 +681,9 @@ $('take-download').onclick = () => {
 };
 $('raw-download').onclick = () => {if(selectedTake?.format==='vli.motion-capture')downloadMotionClip(selectedTake);};
 restoreTake().then(async data => {
-  if(!data || haveUserTake)return;
+  if(!data || haveUserTake || motionLoad.pending)return;
   const clip=data.format==='vrma'?await parseVRMA(data.bytes):data.format==='vli.motion-capture'?validateMotionClip(data):validateDemoMotion(data);
-  if(haveUserTake)return;
+  if(haveUserTake || motionLoad.pending || cameraActive || cameraBusy || session || xrBusy)return;
   selectedTake=clip;
   if (!playbackChoiceMade) {playbackChoice = 'take';activeSource = resolvePlaybackSource(playbackChoice, clip, {watchingLAN: watchingLAN()});}
   $('take-music').checked=!!clip.accompaniment;
@@ -828,3 +856,4 @@ try {
   demoVRMA=await parseVRMA(await vrmaResponse.arrayBuffer());
   await loadModel(asset('demo/vli-performer.vrm'));
 } catch(error) {status('デモを読み込めません。接続を確認して再読み込みしてください。');console.error(error);}
+finally {loading = modelLoad.pending;updateButtons();}
