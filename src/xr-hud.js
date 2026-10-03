@@ -12,13 +12,17 @@ export function createXRHUD(scene) {
   panel.renderOrder = 99; panel.visible = false; scene.add(panel);
   const position = new THREE.Vector3(), rotation = new THREE.Quaternion();
   let previous='';
+  function follow(camera) {
+    camera.getWorldPosition(position); camera.getWorldQuaternion(rotation);
+    panel.position.set(0,-.36,-1.1).applyQuaternion(rotation).add(position);
+    panel.quaternion.copy(rotation);
+  }
   return {
+    follow,
     update(camera, title, subtitle, active, recording=false) {
       panel.visible=active;
       if (!active) return;
-      camera.getWorldPosition(position); camera.getWorldQuaternion(rotation);
-      panel.position.set(0,-.36,-1.1).applyQuaternion(rotation).add(position);
-      panel.quaternion.copy(rotation);
+      follow(camera);
       const next=`${title}|${subtitle}|${recording}`;
       if (next===previous) return;
       previous=next;

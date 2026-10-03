@@ -10,6 +10,8 @@ import { createXRHUD } from './xr-hud.js';
 import { MotionRecorder } from './motion-capture.js';
 import { validateMotionClip, applyCaptureToVRM, downloadMotionClip, MAX_MOTION_FILE_BYTES } from './motion-data.js';
 import { saveTake, restoreTake } from './take-storage.js';
+import { parseVRMA, createVRMAPlayer, downloadVRMA } from './vrma.js';
+import { exportMotionVRMA } from './vrma-export.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -42,14 +44,14 @@ loader.register(parser => new VRMLoaderPlugin(parser));
 const audio = new Audio(asset('demo/neon-door.wav'));
 audio.preload = 'auto'; audio.volume = .6;
 const clock = new THREE.Clock();
-let vrm = null, motion = null, restHips = null, loading = false;
+let vrm = null, restHips = null, loading = false;
 let session = null, sessionMode = null, xrBusy = false, arSupported = false, vrSupported = false;
 let playing = false, finished = false, playRequest = 0, selectedTake = null, activeSource = 'demo';
 let previewTime = 0, previewOrigin = 0, pendingPlacement = false, countdownAt = null, lastUI = 0;
 const recorder = new MotionRecorder({onLimit:clip => { if (clip) acceptTake(clip); endXR(); }});
-let haveUserTake = false;
+let haveUserTake = false, demoVRMA = null, demoPlayer = null, takePlayer = null;
 
-function ready() { return !!vrm && !!motion && !loading; }
+function ready() { return !!vrm && !!demoVRMA && !loading; }
 function updateButtons() {
   $('play').disabled = !ready() || xrBusy;
   $('model').disabled = loading || !!session;
@@ -57,7 +59,9 @@ function updateButtons() {
   $('ar').disabled = !ready() || !arSupported || xrBusy || !!session;
   $('record-xr').disabled = !ready() || !(arSupported || vrSupported) || xrBusy || !!session;
   $('take-play').disabled = !ready() || !selectedTake || !!session;
-  $('take-download').disabled = !selectedTake;
+  $('take-download').disabled = !selectedTake || !ready();
+  $('raw-download').disabled = !selectedTake || selectedTake.format!=='vli.motion-capture';
+  $('demo-motion').disabled = !demoVRMA || !!session;
   $('seek').disabled = !!session;
 }
 function resetPose() {
@@ -113,7 +117,10 @@ async function loadModel(url) {
       for(const material of (Array.isArray(object.material) ? object.material : [object.material]))stencil(material);
     });
     if(vrm){stage.remove(vrm.scene); VRMUtils.deepDispose(vrm.scene);}
+    demoPlayer?.dispose();takePlayer?.dispose();
     vrm = next; stage.add(vrm.scene);
+    demoPlayer = demoVRMA ? createVRMAPlayer(vrm,demoVRMA) : null;
+    takePlayer = selectedTake?.format==='vrma' ? createVRMAPlayer(vrm,selectedTake) : null;
     restHips = vrm.humanoid.getNormalizedBoneNode('hips').position.clone();
     status('準備できました。ライブを再生すると幕が上がります。');
   } catch(error) {
@@ -130,6 +137,7 @@ $('model').addEventListener('change', async event => {
 $('play').onclick = playDemo;
 $('stop').onclick = () => {stop();status('停止しました。再生または位置調整ができます。');};
 $('take-play').onclick = playTake;
+$('demo-motion').onclick = () => {if(demoVRMA){stop();acceptTake(demoVRMA);}};
 $('demo-reset').onclick = () => {stop();activeSource='demo';$('track-title').textContent='NEON DOOR';status('デモに戻しました。ライブを再生できます。');};
 $('volume').oninput = () => {audio.volume = Number($('volume').value);};
 $('seek').oninput = () => {
@@ -158,11 +166,13 @@ function place() {
 }
 function acceptTake(clip) {
   if(!clip)return;
+  takePlayer?.dispose();takePlayer=null;
   selectedTake = clip; haveUserTake = true;
-  $('take-info').textContent = `${formatTime(clip.duration)} · ${clip.frames.length} フレーム · ${clip.format==='vli.motion-capture'?'頭＋両手の収録':'振り付け'}`;
+  if(clip.format==='vrma'&&vrm)takePlayer=createVRMAPlayer(vrm,clip);
+  $('take-info').textContent = `${formatTime(clip.duration)} · ${clip.format==='vrma'?'VRM Animation 1.0':clip.frames.length+' フレーム · '+(clip.format==='vli.motion-capture'?'頭＋両手の収録':'旧形式の振り付け')}`;
   $('record-status').textContent = 'モーションを保存しました。プレビュー・ダウンロードできます。';
   updateButtons();
-  saveTake(clip).catch(() => {$('record-status').textContent='端末内の保存容量が不足しています。ダウンロードして保存してください。';});
+  saveTake(clip.format==='vrma'?{format:'vrma',bytes:clip.bytes}:clip).catch(() => {$('record-status').textContent='端末内の保存容量が不足しています。ダウンロードして保存してください。';});
 }
 function finishRecording() {
   countdownAt = null;
@@ -209,6 +219,11 @@ async function enterXR(mode) {
       resize();updateButtons();status('XRを終了しました。収録したモーションは下のスタジオで確認できます。');
     },{once:true});
     await renderer.xr.setSession(next);pendingPlacement=true;
+    const reference=renderer.xr.getReferenceSpace();
+    const recentered=()=>{if(sessionMode==='record'){finishRecording();endXR();}};
+    reference.addEventListener('reset',recentered);
+    next.addEventListener('end',()=>reference.removeEventListener('reset',recentered),{once:true});
+    next.addEventListener('visibilitychange',()=>{if(next.visibilityState!=='visible')countdownAt=null;});
     status(mode==='record'?'トリガーで3秒後に収録開始。正面を見て両手を自然に構えてください。':'壁を正面に見てトリガーで配置・開演します。');
   } catch(error) {
     await endXR();session=null;sessionMode=null;controls.enabled=true;
@@ -228,6 +243,7 @@ async function detectXR() {
 $('motion-file').onchange = async event => {
   const file = event.target.files[0];if(!file)return;
   try {
+    if(file.name.toLowerCase().endsWith('.vrma')){if(file.size>20*1024*1024)throw new Error('VRMAは20MB以内にしてください。');const clip=await parseVRMA(await file.arrayBuffer());stop();acceptTake(clip);return;}
     if(file.size>MAX_MOTION_FILE_BYTES || file.size===0)throw new Error('JSONは12MB以内にしてください。');
     const data = JSON.parse(await file.text());
     const clip = data.format === 'vli.motion-capture' ? validateMotionClip(data) : validateDemoMotion(data);
@@ -237,18 +253,21 @@ $('motion-file').onchange = async event => {
   finally {event.target.value='';}
 };
 $('take-download').onclick = () => {
-  if(!selectedTake)return;
-  if(selectedTake.format==='vli.motion-capture'){downloadMotionClip(selectedTake);return;}
-  const blob = new Blob([JSON.stringify(selectedTake)],{type:'application/json'});
-  const url = URL.createObjectURL(blob), link=document.createElement('a');
-  link.href=url;link.download='vli-choreography.json';document.body.append(link);link.click();link.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),30000);
+  if(!selectedTake||!vrm)return;
+  try{
+    const bytes=selectedTake.format==='vrma'?selectedTake.bytes:exportMotionVRMA(vrm,selectedTake);
+    downloadVRMA(bytes);
+    $('record-status').textContent='VRMAを書き出しました。VRM Animation対応アプリで利用できます。';
+  }catch(error){$('record-status').textContent=`書き出し失敗: ${error.message}`;}
 };
-restoreTake().then(data => {
+$('raw-download').onclick = () => {if(selectedTake?.format==='vli.motion-capture')downloadMotionClip(selectedTake);};
+restoreTake().then(async data => {
   if(!data || haveUserTake)return;
-  const clip=data.format==='vli.motion-capture'?validateMotionClip(data):validateDemoMotion(data);
+  const clip=data.format==='vrma'?await parseVRMA(data.bytes):data.format==='vli.motion-capture'?validateMotionClip(data):validateDemoMotion(data);
+  if(haveUserTake)return;
   selectedTake=clip;
-  $('take-info').textContent=`前回のモーション · ${formatTime(clip.duration)} · ${clip.frames.length} フレーム`;
+  if(clip.format==='vrma'&&vrm)takePlayer=createVRMAPlayer(vrm,clip);
+  $('take-info').textContent=`前回のモーション · ${formatTime(clip.duration)} · ${clip.format==='vrma'?'VRMA':clip.frames.length+' フレーム'}`;
   updateButtons();
 }).catch(()=>{});
 
@@ -262,7 +281,7 @@ renderer.setAnimationLoop((time,frame) => {
   const delta=Math.min(clock.getDelta(),.05);
   if(pendingPlacement && renderer.xr.isPresenting){place();pendingPlacement=false;}
   if(sessionMode==='record' && frame) {
-    if(countdownAt!==null && performance.now()>=countdownAt){countdownAt=null;recorder.start({referenceSpaceType:'local'});}
+    if(countdownAt!==null && session.visibilityState==='visible' && performance.now()>=countdownAt){countdownAt=null;recorder.start({referenceSpaceType:'local'});}
     if(recorder.state==='recording')recorder.recordFrame(time,frame,renderer.xr.getReferenceSpace());
   }
   if(activeSource==='take' && playing && playbackTime()>=duration()) {previewTime=duration();playing=false;finished=true;}
@@ -270,11 +289,13 @@ renderer.setAnimationLoop((time,frame) => {
   const demoActive=activeSource==='demo' && (playing || finished || t>0);
   const state=demoActive?cue(finished?DURATION:t):{label:activeSource==='take'?'MOTION PREVIEW':'STANDBY',curtain:0};
   curtain.visible=state.curtain>.001;curtain.scale.y=Math.max(.001,state.curtain);curtain.position.y=2.5-1.25*state.curtain;
-  if(vrm && motion) {
+  if(vrm && demoVRMA) {
     if(activeSource==='take' && selectedTake) {
-      if(selectedTake.format==='vli.motion-capture')applyCaptureToVRM(vrm,selectedTake,t);
+      if(selectedTake.format==='vrma')takePlayer?.seek(t);
+      else if(selectedTake.format==='vli.motion-capture')applyCaptureToVRM(vrm,selectedTake,t);
       else applyDemoMotion(vrm,selectedTake,t,restHips);
-    } else applyDemoMotion(vrm,motion,Math.max(0,t),restHips);
+    } else if(demoPlayer)demoPlayer.seek(Math.max(0,t));
+
     vrm.update(delta);
   }
   if(time-lastUI>100) {
@@ -282,20 +303,21 @@ renderer.setAnimationLoop((time,frame) => {
     $('seek').max=duration();$('seek').value=t;
     if(sessionMode==='record') {
       const recording=recorder.state==='recording';
-      const title=countdownAt!==null?`START IN ${Math.max(1,Math.ceil((countdownAt-performance.now())/1000))}`:recording?`● REC ${formatTime(recorder.duration)} / 03:00`:'MOTION CAPTURE';
+      const title=countdownAt!==null?`START IN ${Math.max(1,Math.ceil((countdownAt-performance.now())/1000))}`:recording?(recorder.frameCount?`● REC ${formatTime(recorder.duration)} / 03:00`:'TRACKING…'):'MOTION CAPTURE';
       const detail=countdownAt!==null?'正面を向いて、両手を自然に構えてください':recording?'トリガーで保存して終了':'トリガーで収録開始 · 頭と両手を記録';
       hud.update(renderer.xr.getCamera(),title,detail,true,recording);
-      $('record-status').textContent=recording?`${title} · ${recorder.frameCount} フレーム`:detail;
+      if(recorder.state!=='complete')$('record-status').textContent=recording?`${title} · ${recorder.frameCount} フレーム`:detail;
     } else if(session)hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:'YOUR STAGE IS READY',playing?'トリガーで停止・再配置':'壁を向いてトリガーで配置・開演',true);
     lastUI=time;
   }
   // Reposition head-locked HUD every frame; texture only changes with text.
-  if(!session)controls.update();
+  if(session)hud.follow(renderer.xr.getCamera());
+  else controls.update();
   renderer.render(scene,camera);
 });
 detectXR();
 try {
-  const response=await fetch(asset('demo/motion.json'));if(!response.ok)throw new Error('motion HTTP error');
-  motion=validateDemoMotion(await response.json());
+  const vrmaResponse=await fetch(asset('demo/neon-door.vrma'));if(!vrmaResponse.ok)throw new Error('VRMA HTTP error');
+  demoVRMA=await parseVRMA(await vrmaResponse.arrayBuffer());
   await loadModel(asset('demo/vli-performer.vrm'));
 } catch(error) {status('デモを読み込めません。接続を確認して再読み込みしてください。');console.error(error);}

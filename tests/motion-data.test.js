@@ -84,6 +84,39 @@ test('time cap auto-stops, keeps take and invokes callback once', () => {
   assert.equal(recorder.lastClip.duration, .1);
 });
 
+test('suspended frames across the cap end with a gap instead of an incorrectly timed pose', () => {
+  const recorder = new MotionRecorder({ maxDuration: 1 });
+  recorder.start();
+  recorder.recordFrame(0, frame(), reference);
+  recorder.recordFrame(2000, frame(xrPose(4)), reference);
+  assert.equal(recorder.lastClip.duration, 1);
+  assert.equal(recorder.lastClip.frames.at(-1).head, null);
+  assert.equal(sampleMotionClip(recorder.lastClip, .5).head, null);
+});
+
+test('invalid initial tracking, backwards timestamps and XR pose exceptions do not corrupt the take', () => {
+  const recorder = new MotionRecorder();
+  recorder.start();
+  assert.equal(recorder.recordFrame(0, frame({ transform: {} }), reference), false);
+  assert.equal(recorder.recordFrame(0, frame(xrPose(101)), reference), false);
+  const missing = frame();
+  missing.getViewerPose = () => { throw new Error('XR session unavailable'); };
+  assert.equal(recorder.recordFrame(0, missing, reference), false);
+  recorder.recordFrame(1000, frame(), reference);
+  assert.equal(recorder.recordFrame(500, frame(), reference), false);
+  recorder.recordFrame(1034, missing, reference);
+  const clip = recorder.stop();
+  assert.equal(clip.frames.length, 2);
+  assert.equal(clip.frames[1].head, null);
+  assert.doesNotThrow(() => validateMotionClip(JSON.parse(serializeMotionClip(clip))));
+  recorder.start();
+  recorder.recordFrame(1100, frame(), reference);
+  recorder.cancel();
+  assert.equal(recorder.state, 'idle');
+  assert.equal(recorder.lastClip, clip);
+  assert.equal(recorder.frameCount, 0);
+});
+
 test('malformed, unbounded and unsupported data fail validation', () => {
   const clip = take();
   const rejected = mutate => { const bad = structuredClone(clip); mutate(bad); assert.throws(() => validateMotionClip(bad), /モーションデータ/); };

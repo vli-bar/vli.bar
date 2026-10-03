@@ -1,0 +1,157 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMRequiredHumanBoneName } from '@pixiv/three-vrm';
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
+import { exportMotionVRMA } from '../src/vrma-export.js';
+import { applyDemoMotion } from '../src/demo-motion.js';
+import { applyCaptureToVRM } from '../src/motion-data.js';
+import { parseVRMA, createVRMAPlayer } from '../src/vrma.js';
+
+async function avatar() {
+  const buffer = await readFile(new URL('../public/demo/vli-performer.vrm', import.meta.url));
+  const loader = new GLTFLoader(); loader.register(parser => new VRMLoaderPlugin(parser));
+  return (await loader.parseAsync(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength), '')).userData.vrm;
+}
+async function loadAnimation(buffer) {
+  const loader = new GLTFLoader(); loader.register(parser => new VRMAnimationLoaderPlugin(parser));
+  return loader.parseAsync(buffer, '');
+}
+function jsonChunk(buffer) {
+  const view = new DataView(buffer);
+  assert.equal(view.getUint32(0, true), 0x46546c67);
+  assert.equal(view.getUint32(4, true), 2);
+  assert.equal(view.getUint32(8, true), buffer.byteLength);
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 20, view.getUint32(12, true))));
+}
+const demo = JSON.parse(await readFile(new URL('../public/demo/motion.json', import.meta.url), 'utf8'));
+const capture = JSON.parse(await readFile(new URL('./fixtures/capture-sample.json', import.meta.url), 'utf8'));
+
+test('VRMA GLB follows VRMC_vrm_animation 1.0 hierarchy and channel restrictions', async () => {
+  const vrm = await avatar();
+  const exported = exportMotionVRMA(vrm, demo);
+  const json = jsonChunk(exported);
+  const extension = json.extensions.VRMC_vrm_animation;
+  assert.equal(extension.specVersion, '1.0');
+  assert.ok(json.extensionsUsed.includes('VRMC_vrm_animation'));
+  assert.equal(json.animations.length, 1);
+  assert.equal(json.meshes, undefined);
+  assert.equal(json.images, undefined);
+  assert.equal(json.buffers[0].uri, undefined);
+  const mapping = extension.humanoid.humanBones;
+  for (const required of Object.values(VRMRequiredHumanBoneName)) assert.ok(mapping[required]);
+  assert.equal(mapping.leftEye, undefined); assert.equal(mapping.rightEye, undefined);
+  const mapped = new Set(Object.values(mapping).map(entry => entry.node));
+  for (const entry of Object.values(mapping)) {
+    const node = json.nodes[entry.node];
+    assert.ok(node); assert.equal(node.scale, undefined); assert.equal(node.rotation, undefined);
+    assert.ok(node.translation.every(Number.isFinite));
+  }
+  assert.ok(json.nodes[mapping.hips.node].translation[1] > .1);
+  const expressions = extension.expressions.preset;
+  for (const name of ['aa', 'happy', 'blink']) assert.ok(json.nodes[expressions[name].node]);
+  for (const channel of json.animations[0].channels) {
+    const { node, path } = channel.target;
+    assert.ok(json.nodes[node]);
+    assert.ok(path === 'rotation' || path === 'translation');
+    if (mapped.has(node) && path === 'translation') assert.equal(node, mapping.hips.node);
+    if (!mapped.has(node)) {
+      assert.equal(path, 'translation');
+      const sampler = json.animations[0].samplers[channel.sampler];
+      assert.equal(json.accessors[sampler.output].type, 'VEC3');
+    }
+  }
+  for (const accessor of json.accessors) {
+    assert.equal(accessor.componentType, 5126);
+    assert.equal(accessor.count, 2161);
+    const bufferView = json.bufferViews[accessor.bufferView];
+    assert.equal(bufferView.byteOffset % 4, 0);
+    assert.ok(bufferView.byteOffset + bufferView.byteLength <= json.buffers[0].byteLength);
+  }
+});
+
+for (const [name, source, samples] of [['demo choreography', demo, [0, 7.5, 17.733333333, 41.5, 65.3]], ['captured head and hands', capture, [0, .5, 1, 1.5]]]) {
+  test(`${name} round-trips through the official VRMA loader and humanoid retargeter`, async () => {
+    const vrm = await avatar();
+    const exported = exportMotionVRMA(vrm, source);
+    const loaded = await loadAnimation(exported);
+    assert.equal(loaded.userData.vrmAnimations.length, 1);
+    const animation = loaded.userData.vrmAnimations[0];
+    assert.ok(Math.abs(animation.duration - source.duration) < 1e-5);
+    const clip = createVRMAnimationClip(animation, vrm);
+    const mixer = new THREE.AnimationMixer(vrm.scene);
+    const action = mixer.clipAction(clip); action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true; action.play();
+    const restHips = vrm.humanoid.getNormalizedBoneNode('hips').position.clone();
+    for (const t of samples) {
+      vrm.humanoid.resetNormalizedPose();
+      for (const expression of ['aa', 'happy', 'blink']) vrm.expressionManager.setValue(expression, 0);
+      if (source.format === 'vli.motion-capture') applyCaptureToVRM(vrm, source, t);
+      else applyDemoMotion(vrm, source, t, restHips);
+      const expected = vrm.humanoid.getNormalizedPose();
+      const weights = ['aa', 'happy', 'blink'].map(expression => vrm.expressionManager.getValue(expression));
+      vrm.humanoid.resetNormalizedPose();
+      mixer.setTime(t);
+      const actual = vrm.humanoid.getNormalizedPose();
+      for (const [bone, pose] of Object.entries(expected)) {
+        const a = new THREE.Quaternion().fromArray(pose.rotation);
+        const b = new THREE.Quaternion().fromArray(actual[bone].rotation);
+        assert.ok(a.angleTo(b) < .001, `${bone} rotation differs at ${t}: ${a.angleTo(b)}`);
+      }
+      const positionError = new THREE.Vector3().fromArray(expected.hips.position).distanceTo(new THREE.Vector3().fromArray(actual.hips.position));
+      assert.ok(positionError < .00001, `hips translation differs at ${t}: ${positionError}`);
+      // glTF stores key times as Float32. Near a blink's sharp peak, a few
+      // microseconds of quantization can change the weight by ~0.0001.
+      ['aa', 'happy', 'blink'].forEach((expression, i) => assert.ok(Math.abs(vrm.expressionManager.getValue(expression) - weights[i]) < .001, `${expression} differs at ${t}`));
+    }
+    mixer.stopAllAction();
+  });
+}
+
+test('export preserves live pose, expressions and world presentation transforms', async () => {
+  const vrm = await avatar();
+  const hips = vrm.humanoid.getNormalizedBoneNode('hips');
+  hips.position.x = .37;
+  vrm.humanoid.getNormalizedBoneNode('head').rotation.set(.2, .4, -.1);
+  vrm.expressionManager.setValue('happy', .73); vrm.expressionManager.setValue('aa', .31);
+  vrm.scene.position.set(1, 2, 3); vrm.scene.rotation.y = .75; vrm.scene.scale.setScalar(.8);
+  const pose = vrm.humanoid.getNormalizedPose(), position = vrm.scene.position.toArray(), rotation = vrm.scene.quaternion.toArray();
+  exportMotionVRMA(vrm, capture);
+  assert.deepEqual(vrm.humanoid.getNormalizedPose(), pose);
+  assert.equal(vrm.expressionManager.getValue('happy'), .73); assert.equal(vrm.expressionManager.getValue('aa'), .31);
+  assert.deepEqual(vrm.scene.position.toArray(), position); assert.deepEqual(vrm.scene.quaternion.toArray(), rotation); assert.equal(vrm.scene.scale.x, .8);
+  assert.throws(() => exportMotionVRMA(vrm, demo, { fps: 120 }), /fps/);
+  assert.throws(() => exportMotionVRMA(vrm, { ...capture, version: 99 }), /モーションデータ/);
+  assert.throws(() => exportMotionVRMA(vrm, { ...capture, duration: 0, frames: [capture.frames[0]] }), /短すぎます/);
+  assert.deepEqual(vrm.humanoid.getNormalizedPose(), pose);
+  vrm.meta.metaVersion = '0';
+  assert.throws(() => exportMotionVRMA(vrm, capture), /VRM 1.0/);
+});
+
+test('distributed VRMA loads with the official implementation and matches demo duration', async () => {
+  const bytes = await readFile(new URL('../public/demo/neon-door.vrma', import.meta.url));
+  const loaded = await loadAnimation(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const animation = loaded.userData.vrmAnimations[0];
+  assert.equal(animation.duration, demo.duration);
+  assert.ok(animation.humanoidTracks.rotation.size >= 15);
+  assert.ok(animation.humanoidTracks.translation.has('hips'));
+  assert.ok(animation.expressionTracks.preset.has('happy'));
+});
+
+test('exported capture imports and seeks through the application standard VRMA path', async () => {
+  const vrm = await avatar();
+  const buffer = exportMotionVRMA(vrm, capture);
+  const source = await parseVRMA(buffer);
+  assert.equal(source.format, 'vrma'); assert.equal(source.duration, capture.duration);
+  const restHips = vrm.humanoid.getNormalizedBoneNode('hips').position.clone();
+  applyCaptureToVRM(vrm, capture, .5);
+  const expected = vrm.humanoid.getNormalizedBoneNode('leftUpperArm').quaternion.clone();
+  const player = createVRMAPlayer(vrm, source);
+  player.seek(.5);
+  assert.ok(vrm.humanoid.getNormalizedBoneNode('leftUpperArm').quaternion.angleTo(expected) < .001);
+  player.seek(2); player.seek(.5);
+  assert.ok(vrm.humanoid.getNormalizedBoneNode('leftUpperArm').quaternion.angleTo(expected) < .001);
+  player.dispose();
+  assert.ok(restHips.y > 0);
+});

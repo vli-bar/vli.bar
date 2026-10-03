@@ -58,7 +58,8 @@ export class MotionRecorder {
       const transform = viewer?.transform;
       if (!transform) return false;
       const { position: p, orientation: q } = transform;
-      if (![p.x, p.y, p.z, q.x, q.y, q.z, q.w].every(Number.isFinite)) return false;
+      if (![p?.x, p?.y, p?.z, q?.x, q?.y, q?.z, q?.w].every(Number.isFinite)) return false;
+      if ([p.x, p.y, p.z].some(value => Math.abs(value) > 100)) return false;
       if (Math.hypot(q.x, q.y, q.z, q.w) < .0001) return false;
       const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize());
       // Capture origin is the first head position with only its yaw removed.
@@ -74,7 +75,9 @@ export class MotionRecorder {
     const t = round(Math.min(elapsed, this.maxDuration));
     if (this.frames.length && t <= this.duration) return false;
     const sample = { t, visibility: ['visible', 'visible-blurred', 'hidden'].includes(visibility) ? visibility : 'hidden', head: null, left: null, right: null };
-    if (sample.visibility === 'visible') {
+    // If the browser suspended frames across the time limit, do not label a
+    // resumed pose as though it had been measured at the earlier limit time.
+    if (sample.visibility === 'visible' && elapsed <= this.maxDuration + .001) {
       sample.head = this.relativePose(viewer);
       for (const input of frame.session?.inputSources ?? []) {
         if (!input.gripSpace || !['left', 'right'].includes(input.handedness)) continue;

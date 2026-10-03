@@ -193,7 +193,7 @@ export function applyCaptureToVRM(vrm, clip, time) {
   if (spine) head.quaternion.premultiply(spine.quaternion.clone().invert());
   for (const side of ['left', 'right']) {
     const leg = get(side + 'LowerLeg');
-    if (leg) leg.rotation.x = -Math.max(0, -offset.y) * .25;
+    if (leg) leg.rotation.x = Math.max(0, -offset.y) * .25;
   }
   vrm.scene.updateMatrixWorld(true);
   armIK(vrm, 'left', sample.left, rest.headAnchor, meterScale);

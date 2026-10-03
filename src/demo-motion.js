@@ -3,7 +3,7 @@ import * as THREE from 'three';
 export function sampleDemoMotion(motion, time) {
   const frames = motion.frames;
   let low = 0, high = frames.length - 1;
-  const t = Math.max(0, Math.min(motion.duration, time));
+  const t = Math.max(0, Math.min(motion.duration, Number.isFinite(time) ? time : 0));
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
     if (frames[middle].t <= t) low = middle;
@@ -39,13 +39,15 @@ export function validateDemoMotion(data) {
   if (!data || !Number.isFinite(data.duration) || data.duration <= 0 || data.duration > 180 || !Number.isInteger(data.fps) || data.fps < 1 || data.fps > 60 || !Array.isArray(data.frames) || data.frames.length < 2 || data.frames.length > 10801) fail();
   const allowed = new Set(['hips','spine','chest','upperChest','neck','head','leftShoulder','rightShoulder','leftUpperArm','rightUpperArm','leftLowerArm','rightLowerArm','leftHand','rightHand','leftUpperLeg','rightUpperLeg','leftLowerLeg','rightLowerLeg','leftFoot','rightFoot','leftToes','rightToes']);
   const vector = (v,bound) => Array.isArray(v) && v.length===3 && v.every(n=>Number.isFinite(n)&&Math.abs(n)<=bound);
-  let previous=-1;
+  let previous=-1, boneKeys=null;
   const frames=data.frames.map((f,i)=>{
     if(!f || !Number.isFinite(f.t) || f.t<=previous || f.t>data.duration+.001 || (i===0&&f.t!==0) || !f.bones || typeof f.bones!=='object' || Array.isArray(f.bones)) fail();
     previous=f.t;
     const bones={};
     for(const [name,rot] of Object.entries(f.bones)){if(!allowed.has(name)||!vector(rot,Math.PI*4)) fail();bones[name]=[...rot];}
-    if(!Object.keys(bones).length) fail();
+    const keys=Object.keys(bones).sort().join(',');
+    if(!keys || (boneKeys!==null&&keys!==boneKeys))fail();
+    boneKeys=keys;
     const result={t:f.t,bones};
     if(f.root!==undefined){if(!vector(f.root,2)) fail();result.root=[...f.root];}
     for(const key of ['aa','happy','blink']){const n=f[key]??0;if(!Number.isFinite(n)||n<0||n>1)fail();result[key]=n;}
