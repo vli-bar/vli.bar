@@ -12,6 +12,7 @@ import { validateMotionClip, applyCaptureToVRM, downloadMotionClip, MAX_MOTION_F
 import { saveTake, restoreTake } from './take-storage.js';
 import { parseVRMA, createVRMAPlayer, downloadVRMA } from './vrma.js';
 import { exportMotionVRMA } from './vrma-export.js';
+import { WallPlacement } from './wall-placement.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -39,6 +40,7 @@ controls.minDistance = 1; controls.maxDistance = 8;
 controls.update();
 const {stage, curtain, stencil} = buildStage(scene);
 const hud = createXRHUD(scene);
+const walls = new WallPlacement(scene);
 const loader = new GLTFLoader();
 loader.register(parser => new VRMLoaderPlugin(parser));
 const audio = new Audio(asset('demo/neon-door.wav'));
@@ -63,6 +65,7 @@ function updateButtons() {
   $('raw-download').disabled = !selectedTake || selectedTake.format!=='vli.motion-capture';
   $('demo-motion').disabled = !demoVRMA || !!session;
   $('seek').disabled = !!session;
+  for (const id of ['placement-mode', 'width', 'distance']) $(id).disabled = !!session || xrBusy;
 }
 function resetPose() {
   vrm?.humanoid.resetNormalizedPose();
@@ -183,7 +186,13 @@ function finishRecording() {
   }
 }
 async function endXR() { if(session)await session.end().catch(()=>{}); }
-async function select() {
+function restorePreview() {
+  walls.end();pendingPlacement=false;controls.enabled=true;
+  stage.visible=true;stage.position.set(0,0,0);stage.rotation.set(0,0,0);
+  stage.scale.setScalar(Number($('width').value)/2.4);
+  renderer.setClearColor(0x171922,1);hud.update(camera,'','',false);resize();
+}
+async function select(event) {
   if(!session || !ready())return;
   if(sessionMode==='record') {
     if(countdownAt!==null){countdownAt=null;$('record-status').textContent='開始をキャンセルしました。';return;}
@@ -191,11 +200,26 @@ async function select() {
     else countdownAt = performance.now() + 3000;
     return;
   }
-  if(playing){stop();place();}else{place();await playDemo();}
+  if (walls.placed) {
+    if (playing) stop(); else await playDemo();
+  } else {
+    const placement = walls.confirm(event.frame, event.inputSource);
+    if (!placement) return;
+    stage.position.copy(placement.position);
+    stage.quaternion.copy(placement.quaternion);
+    stage.scale.setScalar(placement.width / 2.4);
+    stage.visible = true;
+  }
+}
+function reposition() {
+  if (sessionMode !== 'live') return;
+  stop(); stage.visible = false;
+  walls.reset({switchToManual: walls.mode === 'auto' && !walls.placed});
 }
 for(let i=0;i<2;i++) {
   const controller = renderer.xr.getController(i);
-  controller.addEventListener('select',select);scene.add(controller);
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(.012,10,8),new THREE.MeshBasicMaterial({color:0xc6ff75}));
+  controller.add(tip);scene.add(controller);
   // Visible controllers help users orient their hands in the recording room.
   const grip=renderer.xr.getControllerGrip(i);
   const marker=new THREE.Mesh(new THREE.SphereGeometry(.025,12,8),new THREE.MeshBasicMaterial({color:i?0xb8a0ff:0xc6ff75}));
@@ -207,31 +231,45 @@ async function enterXR(mode) {
   const type = mode==='record' ? (vrSupported?'immersive-vr':'immersive-ar') : 'immersive-ar';
   try {
     // requestSession is called directly inside the user gesture, before any await.
-    const request = navigator.xr.requestSession(type,{optionalFeatures:['local-floor']});
+    const request = navigator.xr.requestSession(type,{optionalFeatures: mode === 'live' && $('placement-mode').value === 'auto'
+      ? ['local-floor', 'plane-detection', 'hit-test'] : ['local-floor']});
     if(mode==='live')audio.play().then(()=>{if(!playing){audio.pause();audio.currentTime=0;}}).catch(()=>{});
     const next = await request;
     session = next;sessionMode = mode;controls.enabled=false;
     renderer.setClearColor(type==='immersive-ar'?0:0x101117,type==='immersive-ar'?0:1);
     next.addEventListener('end', () => {
-      finishRecording();session=null;sessionMode=null;countdownAt=null;stop();
-      controls.enabled=true;stage.position.set(0,0,0);stage.rotation.set(0,0,0);
-      renderer.setClearColor(0x171922,1);hud.update(camera,'','',false);
-      resize();updateButtons();status('XRを終了しました。収録したモーションは下のスタジオで確認できます。');
+      finishRecording();session=null;sessionMode=null;countdownAt=null;stop();restorePreview();
+      updateButtons();status('XRを終了しました。収録したモーションは下のスタジオで確認できます。');
     },{once:true});
-    await renderer.xr.setSession(next);pendingPlacement=true;
+    await renderer.xr.setSession(next);
+    if (session !== next || !renderer.xr.isPresenting) return;
+    pendingPlacement=mode==='record';
     const reference=renderer.xr.getReferenceSpace();
-    const recentered=()=>{if(sessionMode==='record'){finishRecording();endXR();}};
+    if (mode === 'live') {
+      stage.visible = false;
+      walls.start(next, reference, {mode: $('placement-mode').value, width: Number($('width').value), distance: Number($('distance').value)});
+    }
+    next.addEventListener('select', select);
+    next.addEventListener('squeeze', reposition);
+    const recentered=()=>{if(sessionMode==='record'){finishRecording();endXR();}else{stop();stage.visible=false;walls.reset();}};
     reference.addEventListener('reset',recentered);
     next.addEventListener('end',()=>reference.removeEventListener('reset',recentered),{once:true});
-    next.addEventListener('visibilitychange',()=>{if(next.visibilityState!=='visible')countdownAt=null;});
-    status(mode==='record'?'トリガーで3秒後に収録開始。正面を見て両手を自然に構えてください。':'壁を正面に見てトリガーで配置・開演します。');
+    next.addEventListener('visibilitychange',()=>{if(next.visibilityState!=='visible'){countdownAt=null;if(mode==='live')stop(false);}});
+    status(mode==='record'?'トリガーで3秒後に収録開始。正面を見て両手を自然に構えてください。':'壁の候補を確認してトリガーで配置。もう一度押すと開演します。');
   } catch(error) {
-    await endXR();session=null;sessionMode=null;controls.enabled=true;
+    await endXR();session=null;sessionMode=null;restorePreview();
     status('XRを開始できません。PICOブラウザ・HTTPS・権限を確認してください。');console.error(error);
   } finally {xrBusy=false;updateButtons();}
 }
 $('ar').onclick = () => enterXR('live');
 $('record-xr').onclick = () => enterXR('record');
+$('xr-diagnostics').onclick = () => {
+  const data = {timestamp: new Date().toISOString(), userAgent: navigator.userAgent,
+    secureContext: isSecureContext, arSupported, vrSupported, wall: walls.diagnostics()};
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
+  const link = document.createElement('a');link.href=url;link.download='vli-ar-diagnostics.json';link.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+};
 async function detectXR() {
   try {
     if(navigator.xr) [arSupported,vrSupported] = await Promise.all(['immersive-ar','immersive-vr'].map(mode=>navigator.xr.isSessionSupported(mode).catch(()=>false)));
@@ -280,6 +318,12 @@ new ResizeObserver(resize).observe($('viewport'));
 renderer.setAnimationLoop((time,frame) => {
   const delta=Math.min(clock.getDelta(),.05);
   if(pendingPlacement && renderer.xr.isPresenting){place();pendingPlacement=false;}
+  if(sessionMode==='live' && frame) {
+    walls.update(frame);
+    if (!walls.report.tracking && playing) stop(false);
+    // Hide stale spatial content while positional tracking is unavailable.
+    stage.visible = !!walls.placed && !!walls.report.tracking;
+  }
   if(sessionMode==='record' && frame) {
     if(countdownAt!==null && session.visibilityState==='visible' && performance.now()>=countdownAt){countdownAt=null;recorder.start({referenceSpaceType:'local'});}
     if(recorder.state==='recording')recorder.recordFrame(time,frame,renderer.xr.getReferenceSpace());
@@ -307,7 +351,12 @@ renderer.setAnimationLoop((time,frame) => {
       const detail=countdownAt!==null?'正面を向いて、両手を自然に構えてください':recording?'トリガーで保存して終了':'トリガーで収録開始 · 頭と両手を記録';
       hud.update(renderer.xr.getCamera(),title,detail,true,recording);
       if(recorder.state!=='complete')$('record-status').textContent=recording?`${title} · ${recorder.frameCount} フレーム`:detail;
-    } else if(session)hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:'YOUR STAGE IS READY',playing?'トリガーで停止・再配置':'壁を向いてトリガーで配置・開演',true);
+    } else if(session) {
+      const [title, detail] = walls.guidance();
+      hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:title,playing?'トリガーで停止 · グリップで再配置':detail,true);
+      const report = walls.diagnostics();
+      $('wall-status').textContent = `${title}。${detail}（平面 ${report.planes} / 垂直面 ${report.verticalPlanes}）`;
+    }
     lastUI=time;
   }
   // Reposition head-locked HUD every frame; texture only changes with text.

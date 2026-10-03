@@ -35,10 +35,29 @@
       <div class="viewfoot"><p class="hint">ドラッグで視点移動 · スクロールでズーム</p><label class="volume">音量<input id="volume" type="range" min="0" max="1" step="0.05" value="0.6"></label></div>
     </section>
     <section class="settings">
-      <div><span class="eyebrow">SET YOUR STAGE</span><h2>あなたの場所が、ライブ会場。</h2><p>ARを開始し、壁の正面でトリガーを押すと配置・開演。<br>もう一度押すと停止。正面を向き直して再配置できます。</p><p class="note">壁の自動認識は行いません。舞台の幅と距離を合わせてください。<br>PICOブラウザがARに対応していない場合も、3DプレビューとVR収録を使えます。</p></div>
+      <div>
+        <span class="eyebrow">SET YOUR STAGE</span><h2>あなたの場所が、ライブ会場。</h2>
+        <div class="placement-instructions">
+          <p><strong>壁を自動検出</strong><br>ARを開始し、壁の中心を見ます。候補枠が現れたらトリガーで配置し、もう一度押すと開演します。</p>
+          <p><strong>コントローラーで3点を指定</strong><br>舞台を置く範囲の左下・右下・左上で、コントローラーの緑の点を壁の数cm手前に合わせ、順にトリガーを押します。幅は実測し、高さは比率を保って決まります。</p>
+          <p>サイドグリップで再配置できます。自動検出中に押すと、3点指定へ切り替わります。</p>
+        </div>
+        <p class="note">自動検出は、端末のブラウザが平面情報またはヒットテストを公開している場合に使えます。APIが提供されない環境では、部屋や壁の自動解析はできません。</p>
+        <p class="note">PICOブラウザがARに対応していない場合も、3DプレビューとVR収録を使えます。</p>
+      </div>
       <div class="fields">
+        <label>舞台の配置方法
+          <select id="placement-mode" aria-describedby="wall-status">
+            <option value="auto" selected>壁を自動検出</option>
+            <option value="manual">コントローラーで3点を指定</option>
+            <option value="distance">距離を指定して配置</option>
+          </select>
+        </label>
+        <p id="wall-status" role="status">壁の検出状況はAR開始後に表示します。</p>
         <label>舞台の幅 <output id="widthValue">2.4 m</output><input id="width" type="range" min="1" max="4" value="2.4" step="0.1"></label>
-        <label>目の前からの距離 <output id="distanceValue">2.0 m</output><input id="distance" type="range" min="1" max="5" value="2" step="0.1"></label>
+        <label>目の前からの距離 <output id="distanceValue">2.0 m</output><input id="distance" type="range" min="1" max="5" value="2" step="0.1" aria-describedby="distance-help"></label>
+        <p id="distance-help" class="note">「距離を指定して配置」は、壁を検出せず指定距離に置く手動補助です。壁を検出できない場合は、舞台の幅と距離を合わせてください。</p>
+        <button id="xr-diagnostics" type="button" class="quiet">AR診断を保存</button>
         <label class="file">自分のVRMで出演する<input id="model" type="file" accept=".vrm"></label>
         <p class="note">選択したVRMは端末内で読み込みます。</p>
       </div>

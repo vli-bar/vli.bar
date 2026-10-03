@@ -30,8 +30,8 @@ export function createXRHUD(scene) {
       ctx.fillStyle='rgba(13,17,24,.90)';ctx.fillRect(0,0,1024,192);
       ctx.fillStyle=recording?'#ff7d96':'#c6ff75';ctx.fillRect(0,0,6,192);
       ctx.textAlign='center';ctx.fillStyle=recording?'#ff7d96':'#c6ff75';
-      ctx.font='bold 40px sans-serif';ctx.fillText(title,512,78);
-      ctx.fillStyle='#e6e8ef';ctx.font='26px sans-serif';ctx.fillText(subtitle,512,135);
+      ctx.font='bold 40px sans-serif';ctx.fillText(title,512,78,960);
+      ctx.fillStyle='#e6e8ef';ctx.font='26px sans-serif';ctx.fillText(subtitle,512,135,960);
       texture.needsUpdate=true;
     },
   };
