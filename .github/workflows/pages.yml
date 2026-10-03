@@ -30,7 +30,8 @@ jobs:
       - name: Add deployment revision
         env:
           COMMIT_SHA: ${{ github.sha }}
-        run: node -e 'require("fs").writeFileSync("dist/version.json", JSON.stringify({commit: process.env.COMMIT_SHA}))'
+        run: |
+          node -e 'require("fs").writeFileSync("dist/version.json", JSON.stringify({commit: process.env.COMMIT_SHA}))'
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
