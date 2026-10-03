@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAN live — real WebSocket smoke test</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10131c; color: #eef3ff; }
+    body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    button, input { font: inherit; padding: .65rem .8rem; border-radius: .4rem; }
+    button { background: #93efcf; color: #092720; border: 0; margin: .4rem .4rem .4rem 0; }
+    button:disabled { opacity: .4; }
+    input { width: min(100%, 28rem); box-sizing: border-box; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { padding: .6rem; border-bottom: 1px solid #425267; text-align: left; }
+    li { margin: .5rem 0; }
+    [data-state="passed"] { color: #93efcf; }
+    [data-state="failed"] { color: #ffb0b0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #1e2836; padding: 1rem; }
+    code { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>LAN live smoke test</h1>
+  <p>開発用。演者・スマホ観客・HMD観客の3クライアントを、アプリの LiveRoom と実際の WebSocket サーバーで接続します。姿勢は合成入力です。カメラ・WebXR・アバター描画・実機の位置合わせは検証しません。</p>
+  <p>先に <code>npm run lan:localhost -- --port 8080</code> と <code>npm run dev</code> を起動してください。初期接続先はこのPCのループバック限定です。</p>
+  <label for="relay-url">Relay URL</label><br />
+  <input id="relay-url" type="url" value="http://localhost:8080" spellcheck="false" />
+  <div>
+    <button id="connect" type="button">Connect 3 clients</button>
+    <button id="run" type="button" disabled>Run pose assertions</button>
+    <button id="leave" type="button" disabled>Leave headset and verify</button>
+    <button id="disconnect" type="button" disabled>Disconnect all</button>
+    <button id="scene-start" type="button" disabled>Start continuous scene check</button>
+    <button id="scene-stop" type="button" disabled>Stop scene check</button>
+  </div>
+  <p>実アプリの描画確認用: 下のルームへ4台目の「観客」として参加し、continuous scene check を開始してください。60秒間、演者と観客の<strong>合成姿勢</strong>を送ります。実カメラ・実機の追跡結果ではありません。</p>
+  <label for="current-room">Current room</label><br /><input id="current-room" readonly autocomplete="off" /><br />
+  <label for="current-token">Current test token</label><br /><input id="current-token" readonly autocomplete="off" />
+  <p id="status" role="status" data-state="idle">未接続</p>
+  <p>Assertions: <strong id="assertion-count">0 / 8</strong></p>
+  <ol id="assertions">
+    <li id="assert-roster" data-state="pending">WAIT: 3クライアントが接続し、各端末が他の2人を認識</li>
+    <li id="assert-performer-phone" data-state="pending">WAIT: 演者の連続姿勢をスマホ観客が受信</li>
+    <li id="assert-performer-headset" data-state="pending">WAIT: 演者の連続姿勢をHMD観客が受信</li>
+    <li id="assert-phone-headset" data-state="pending">WAIT: スマホ観客の姿勢をHMD観客が受信</li>
+    <li id="assert-headset-phone" data-state="pending">WAIT: HMD観客の姿勢をスマホ観客が受信</li>
+    <li id="assert-phone-stripped" data-state="pending">WAIT: スマホ観客の手・身体を除去して中継</li>
+    <li id="assert-headset-hands" data-state="pending">WAIT: HMD観客の左右の手を保持して中継</li>
+    <li id="assert-leave" data-state="pending">WAIT: HMD退室後、残り2クライアントの名簿から削除</li>
+  </ol>
+  <table>
+    <thead><tr><th>Client</th><th>State / peers</th><th>Received poses</th></tr></thead>
+    <tbody id="clients"></tbody>
+  </table>
+  <pre id="result">No network traffic yet.</pre>
+  <script type="module" src="./live-smoke.js"></script>
+</body>
+</html>

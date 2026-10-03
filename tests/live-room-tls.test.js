@@ -1,0 +1,56 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,copyFile,readFile,rm} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import {X509Certificate} from 'node:crypto';
+import {get} from 'node:https';
+import path from 'node:path';
+import os from 'node:os';
+import {fileURLToPath} from 'node:url';
+import {setTimeout as delay} from 'node:timers/promises';
+import WebSocket from 'ws';
+import {LiveRoom} from '../src/live-room.js';
+import {createLanServer} from '../server/lan-server.js';
+
+test('generated SAN certificate supports HTTPS and WSS with an explicitly trusted CA, without OS trust changes',async t=>{
+  const temporary=await mkdtemp(path.join(os.tmpdir(),'vli-lan-tls-'));
+  t.after(()=>rm(temporary,{recursive:true,force:true}));
+  await mkdir(path.join(temporary,'scripts'));
+  const helper=path.join(temporary,'scripts','create-lan-cert.mjs');
+  await copyFile(fileURLToPath(new URL('../scripts/create-lan-cert.mjs',import.meta.url)),helper);
+  const generated=spawnSync(process.execPath,[helper,'127.0.0.1','localhost'],{encoding:'utf8',timeout:30000});
+  assert.equal(generated.status,0,generated.stderr);
+  const cert=await readFile(path.join(temporary,'.lan-certs','server.crt'));
+  const key=await readFile(path.join(temporary,'.lan-certs','server.key'));
+  const ca=await readFile(path.join(temporary,'.lan-certs','ca.crt'));
+  const parsed=new X509Certificate(cert);
+  assert.equal(parsed.checkIP('127.0.0.1'),'127.0.0.1');
+  assert.equal(parsed.checkHost('localhost'),'localhost');
+  assert.equal(parsed.checkHost('different.example'),undefined);
+  const repeated=spawnSync(process.execPath,[helper,'127.0.0.1'],{encoding:'utf8',timeout:10000});
+  assert.notEqual(repeated.status,0);
+  assert.match(repeated.stderr,/上書きしません/);
+  assert.deepEqual(await readFile(path.join(temporary,'.lan-certs','server.crt')),cert);
+  const relay=createLanServer({host:'127.0.0.1',port:0,cert,key});
+  const address=await relay.listen();
+  const url=`https://127.0.0.1:${address.port}`;
+  const clients=[];
+  t.after(async()=>{for(const client of clients)client.disconnect();await relay.close();});
+  const response=await new Promise((resolve,reject)=>{
+    get(url+'/health',{ca},response=>{let text='';response.setEncoding('utf8');response.on('data',part=>{text+=part;});response.on('end',()=>resolve({status:response.statusCode,text}));}).on('error',reject);
+  });
+  assert.equal(response.status,200);
+  assert.equal(JSON.parse(response.text).ok,true);
+  class TrustedSocket extends WebSocket {constructor(endpoint){super(endpoint,{ca,origin:url});}}
+  const performer=new LiveRoom({WebSocketImpl:TrustedSocket});
+  const received=[];
+  const audience=new LiveRoom({WebSocketImpl:TrustedSocket,onPose:packet=>received.push(packet)});
+  clients.push(performer,audience);
+  const details={url,room:'tls-stage',token:'trusted-certificate-room',device:'headset',name:'test'};
+  await performer.connect({...details,role:'performer'});
+  await audience.connect({...details,role:'audience'});
+  assert.equal(performer.sendPose({sample:{t:0,visibility:'visible',head:{position:[0,0,0],quaternion:[0,0,0,1]},left:null,right:null,body:null},referenceSpace:'local'}),true);
+  for(let i=0;i<100 && !received.length;i++)await delay(10);
+  assert.equal(received.length,1);
+  assert.equal(received[0].id,performer.selfId);
+});

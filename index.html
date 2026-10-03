@@ -12,7 +12,7 @@
 <div id="app">
   <header>
     <a class="brand" href="./" aria-label="vli.bar ホーム">vli<span>.</span>bar</a>
-    <nav aria-label="メインメニュー"><a href="#stage">LIVE</a><a href="#studio">MOTION STUDIO</a></nav>
+    <nav aria-label="メインメニュー"><a href="#stage">LIVE</a><a href="#lan">LAN ROOM</a><a href="#studio">MOTION STUDIO</a></nav>
     <span class="live">● LIVE LAB / 02</span>
   </header>
   <main>
@@ -64,6 +64,29 @@
         <label class="file">自分のVRMで出演する<input id="model" type="file" accept=".vrm"></label>
         <p class="note">選択したVRMは端末内で読み込みます。</p>
       </div>
+    </section>
+    <section id="lan" class="studio lan-studio">
+      <div class="section-title"><div><span class="eyebrow">LOCAL LIVE ROOM</span><h2>同じ会場で、一緒に観る。</h2></div><span class="chip">REALTIME MOTION / LAN</span></div>
+      <p class="note">同じWi-Fiの会場サーバーへ接続します。出演者の動きをステージへ配信し、ARでは観客同士の顔アバターも表示します。Androidスマホの観客は顔だけ、HMDは取得できる頭と手を共有します。</p>
+      <form id="lan-form" class="lan-fields">
+        <label>会場サーバーのURL<input id="lan-url" type="url" placeholder="https://192.168.1.10:8443" required spellcheck="false" autocomplete="off"></label>
+        <label>ルーム名<input id="lan-room" value="live" required maxlength="48" pattern="[a-zA-Z0-9_\-]+" autocomplete="off"></label>
+        <label>ルームの合言葉（12文字以上）<input id="lan-token" type="password" required minlength="12" maxlength="128" autocomplete="off"></label>
+        <label>表示名<input id="lan-name" required value="ゲスト" maxlength="32" autocomplete="off"></label>
+        <label>参加方法<select id="lan-role"><option value="audience">観客として参加</option><option value="performer">出演者として配信</option></select></label>
+        <label>この端末<select id="lan-device"><option value="auto">自動判定</option><option value="phone">Androidスマホ（観客は顔のみ）</option><option value="headset">HMD（頭と手）</option><option value="desktop">PC（観客は3D視聴のみ）</option></select></label>
+        <div class="lan-actions"><button id="lan-connect" type="submit">ルームに参加</button><button id="lan-disconnect" type="button" class="secondary" disabled>ルームから退出</button></div>
+      </form>
+      <label class="loop-option"><input id="lan-share" type="checkbox" checked> 自分の姿勢をルームへ共有する</label>
+      <p id="lan-status" role="status">未接続。会場サーバーを起動し、全員で同じURL・ルーム名・合言葉を入力してください。</p>
+      <p id="lan-tracking" class="note" role="status"></p>
+      <ul id="lan-peers" aria-label="参加者"></ul>
+      <div class="lan-instructions">
+        <p><strong>出演する</strong><br>「出演者として配信」で参加した後、下の「カメラを準備」または「HMDでモーションを収録」を開きます。待機中から配信し、必要なら同時に収録できます。出演者は1ルーム1人です。</p>
+        <p><strong>一緒に観る</strong><br>「観客として参加」後にARを開始し、全員で同じ壁の同じ下端中心・幅へステージを配置してください。配置後に自分の位置が共有されます。Androidの顔はスマホ位置の目安で、実際の顔の映像や表情ではありません。</p>
+      </div>
+      <p class="note">最大16端末。カメラ映像・音声・モデルファイルは送信しません。出演者の動きは各端末のVRMに反映します。音楽は会場のスピーカー等で再生してください。位置合わせは手動で、端末間の誤差やずれが生じます。</p>
+      <details><summary>会場サーバーの準備</summary><p class="note">会場PCで <code>npm run build</code> の後、信頼済みの証明書を指定して <code>npm run lan</code> を起動します。スマホ・HMDで証明書が信頼されているHTTPS接続が必要です。Pages単独では中継サーバーは起動しません。</p><a href="https://github.com/vli-bar/vli.bar/blob/main/docs/lan-live.md" target="_blank" rel="noopener">HTTPSの準備・起動手順</a></details>
     </section>
     <section id="studio" class="studio">
       <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">ANDROID CAMERA / PICO 4 ULTRA</span></div>

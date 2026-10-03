@@ -19,6 +19,9 @@ import { MusicCapture } from './music-capture.js';
 import { xrInputMode, xrSessionOptions } from './xr-session-options.js';
 import { CameraMotion } from './camera-motion.js';
 import { CameraPoseSampler } from './camera-pose.js';
+import { LiveRoom } from './live-room.js';
+import { LivePerformer, liveTrackingFrame } from './live-performer.js';
+import { createLivePresence, sampleAudiencePose } from './live-presence.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -60,8 +63,58 @@ let playing = false, finished = false, playRequest = 0, selectedTake = null, act
 let previewTime = 0, previewOrigin = 0, pendingPlacement = false, lastUI = 0;
 let referenceSpaceType = 'local', liveTracking = null, previewAfterXR = false, autoplayAfterXR = true, xrInputReady = false, trackingReport = {state: 'not-started'};
 let sessionInputMode = 'controller', pendingTouchPlacement = false;
-let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0;
+let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0, cameraObservedAt = -Infinity;
 const cameraAvailable = isSecureContext && !!navigator.mediaDevices?.getUserMedia;
+let liveRole = null, liveDevice = 'desktop', livePoseSentAt = -Infinity, sharedHead = false;
+const livePerformer = new LivePerformer();
+const livePresence = createLivePresence(scene, stage);
+const liveRoom = new LiveRoom({
+  onState({state, message}) {
+    $('lan-status').textContent = message;
+    if (state === 'connected' && liveRole === 'audience') {
+      stop(); activeSource = 'live'; $('track-title').textContent = 'LAN LIVE';
+      status('LANルームに接続しました。出演者の配信をこの画面とARで視聴できます。');
+    }
+    if (state !== 'connected') {
+      livePerformer.clear(); livePresence.clear(); sharedHead = false;
+      $('lan-peers').replaceChildren();
+      if (activeSource === 'live') {stop(); activeSource = 'demo'; $('track-title').textContent = 'NEON DOOR';}
+    }
+    updateButtons();
+  },
+  onRoster({selfId, peers}) {
+    livePresence.setPeers(peers, selfId); livePerformer.setPeers(peers);
+    $('lan-peers').replaceChildren(...peers.map(peer => {
+      const item = document.createElement('li');
+      item.textContent = `${peer.role === 'performer' ? '出演者' : '観客'} / ${peer.name}`;
+      return item;
+    }));
+  },
+  onPose(packet) {livePerformer.receive(packet); livePresence.receive(packet);},
+  onNotice(message) {$('lan-status').textContent = typeof message === 'string' ? message : message.message;},
+});
+function watchingLAN() {return liveRoom.connected && liveRole === 'audience';}
+function liveDeviceChoice() {
+  const choice = $('lan-device').value;
+  return choice !== 'auto' ? choice : vrSupported ? 'headset' : /Android/i.test(navigator.userAgent) ? 'phone' : 'desktop';
+}
+$('lan-form').onsubmit = async event => {
+  event.preventDefault();
+  if (session || xrBusy || cameraActive || cameraBusy || !ready()) return;
+  liveRole = $('lan-role').value; liveDevice = liveDeviceChoice(); livePoseSentAt = -Infinity;
+  try {
+    await liveRoom.connect({url: $('lan-url').value.trim(), room: $('lan-room').value.trim(), token: $('lan-token').value,
+      name: $('lan-name').value.trim(), role: liveRole, device: liveDevice});
+    $('lan-token').value = '';
+    if (liveRole === 'audience') $('stage').scrollIntoView({behavior: 'smooth', block: 'center'});
+  } catch (error) {$('lan-status').textContent = error.message; updateButtons();}
+};
+$('lan-disconnect').onclick = () => liveRoom.disconnect();
+// A local deployment serves both the app and relay. On Pages the host is entered explicitly.
+if (location.hostname !== 'vli.bar' && !location.hostname.endsWith('.github.io')) {
+  $('lan-url').value = location.port === '5173' ? 'http://localhost:8080' : location.origin;
+}
+window.addEventListener('pagehide', () => liveRoom.disconnect());
 const liveSampler = new LiveMotionSampler();
 const recorder = new MotionRecorder({onLimit:clip => { if (clip) acceptTake(clip); endXR(); }});
 const musicCapture = new MusicCapture({recorder, audio: captureAudio});
@@ -77,6 +130,7 @@ $('stage').before(viewerHome);
 const cameraMotion = new CameraMotion({video: $('camera-video'), maxFps: 15,
   onFrame(result, timeMs) {
     if(!cameraActive || cameraBusy)return;
+    cameraObservedAt = timeMs;
     cameraTracking = cameraSampler.sample(result, timeMs);
     const clip = cameraMusic.tick(timeMs, cameraTracking);
     if(clip){acceptTake(clip);endCamera({autoplay: !cameraMusic.error, message: cameraMusic.error});}
@@ -93,30 +147,36 @@ function updateButtons() {
   const cameraOpen = cameraActive || cameraBusy;
   const busy = xrBusy || !!session || cameraOpen;
   const headset = vrSupported || (arSupported && xrInputMode($('xr-input-mode').value, vrSupported) === 'controller');
-  $('play').disabled = !ready() || busy;
+  const viewingLAN = watchingLAN();
+  $('stop').textContent = viewingLAN ? 'LANから退出' : '停止・リセット';
+  $('play').disabled = !ready() || busy || viewingLAN;
   $('model').disabled = loading || busy;
-  $('motion-file').disabled = busy;
+  $('motion-file').disabled = busy || viewingLAN;
   $('ar').disabled = !ready() || !arSupported || busy;
-  $('record-xr').disabled = !ready() || !headset || busy;
+  $('record-xr').disabled = !ready() || !headset || busy || viewingLAN;
   $('record-music').disabled = xrBusy || !!session || cameraMusic.pending || cameraRecorder.state==='recording';
-  $('music-check').disabled = !ready() || busy;
-  $('take-play').disabled = !ready() || !selectedTake || busy;
+  $('music-check').disabled = !ready() || busy || viewingLAN;
+  $('take-play').disabled = !ready() || !selectedTake || busy || viewingLAN;
   $('take-pause').disabled = !ready() || !selectedTake || activeSource !== 'take' || busy;
   $('take-music').disabled = !selectedTake?.accompaniment || busy;
   $('take-download').disabled = !selectedTake || !ready();
   $('raw-download').disabled = !selectedTake || selectedTake.format!=='vli.motion-capture';
-  $('demo-motion').disabled = !demoVRMA || busy;
-  $('demo-reset').disabled = busy;
-  $('seek').disabled = busy;
+  $('demo-motion').disabled = !demoVRMA || busy || viewingLAN;
+  $('demo-reset').disabled = busy || viewingLAN;
+  $('seek').disabled = busy || viewingLAN;
   $('exit-xr').hidden = !session;
   $('tracking-status').textContent = trackingSummary();
   for (const id of ['xr-input-mode','placement-mode', 'width', 'distance']) $(id).disabled = busy;
-  $('camera-start').disabled = !ready() || !cameraAvailable || busy;
+  $('camera-start').disabled = !ready() || !cameraAvailable || busy || viewingLAN;
   $('camera-record').disabled = !cameraActive || cameraBusy || !cameraMotion.ready;
   $('camera-stop').hidden = !cameraOpen;
   $('camera-stop').textContent = cameraRecorder.state==='recording' ? '保存してカメラを終了' : 'カメラを終了';
   $('camera-facing').disabled = busy;
   $('camera-delay').disabled = cameraMusic.pending || cameraRecorder.state==='recording';
+  const joining = liveRoom.state === 'connecting';
+  for (const id of ['lan-url','lan-room','lan-token','lan-name','lan-role','lan-device']) $(id).disabled = liveRoom.connected || joining;
+  $('lan-connect').disabled = !ready() || busy || liveRoom.connected || joining;
+  $('lan-disconnect').disabled = !liveRoom.connected && !joining;
 }
 function resetPose() {
   vrm?.humanoid.resetNormalizedPose();
@@ -125,6 +185,7 @@ function resetPose() {
 function duration() { return activeSource === 'take' && selectedTake ? selectedTake.duration : DURATION; }
 function takeWithMusic() { return selectedTake?.accompaniment?.track === 'neon-door' && $('take-music').checked; }
 function playbackTime() {
+  if (activeSource === 'live') return 0;
   if (activeSource === 'demo') return musicAudition ? captureAudio.time : audio.currentTime;
   if (playing && takeWithMusic()) return captureAudio.time >= captureAudio.duration ? duration()
     : Math.max(0, Math.min(duration(), captureAudio.time - selectedTake.accompaniment.offset));
@@ -138,7 +199,7 @@ function stop(reset = true) {
   if(reset){audio.currentTime = 0; previewTime = 0; resetPose();}
 }
 async function playDemo() {
-  if(!ready())return;
+  if(!ready() || watchingLAN())return;
   stop(); activeSource = 'demo';
   updateButtons();
   $('track-title').textContent = 'NEON DOOR';
@@ -185,8 +246,8 @@ async function resumeTake() {
   }
 }
 async function startCamera() {
-  if(!ready() || session || xrBusy || cameraActive || cameraBusy)return;
-  stop();activeSource='demo';cameraBusy=true;cameraActive=true;cameraTracking=null;
+  if(!ready() || watchingLAN() || session || xrBusy || cameraActive || cameraBusy)return;
+  stop();activeSource='demo';cameraBusy=true;cameraActive=true;cameraTracking=null;cameraObservedAt=-Infinity;
   const request=++cameraRequest;
   cameraRecorder.cancel();cameraMusic.cancel();cameraMusic.error=null;cameraSampler.reset();
   $('camera-panel').hidden=false;$('camera-avatar-slot').append($('stage'));
@@ -272,7 +333,7 @@ $('model').addEventListener('change', async event => {
   try{await loadModel(url);}finally{URL.revokeObjectURL(url);event.target.value='';}
 });
 $('play').onclick = playDemo;
-$('stop').onclick = () => {if(cameraActive || cameraBusy){endCamera();return;}if(sessionMode==='record'){finishRecording();endXR();}else stop();status('停止しました。再生または位置調整ができます。');};
+$('stop').onclick = () => {if(watchingLAN()){liveRoom.disconnect();status('ルームから退出しました。');return;}if(cameraActive || cameraBusy){endCamera();return;}if(sessionMode==='record'){finishRecording();endXR();}else stop();status('停止しました。再生または位置調整ができます。');};
 $('take-play').onclick = playTake;
 $('take-pause').onclick = () => {
   if (activeSource !== 'take' || !selectedTake || session) return;
@@ -387,6 +448,7 @@ async function select(event) {
     return;
   }
   if (walls.placed) {
+    if (watchingLAN()) return;
     if (playing) stop(); else await playDemo();
   } else {
     const placement = walls.confirm(event.frame, event.inputSource);
@@ -416,9 +478,10 @@ for(let i=0;i<2;i++) {
 }
 async function enterXR(mode) {
   if(!ready() || session || xrBusy || cameraActive || cameraBusy)return;
+  if(mode === 'record' && watchingLAN())return;
   stop();xrBusy=true;xrInputReady=false;previewAfterXR=false;autoplayAfterXR=true;
   if (mode === 'record') {musicCapture.cancel();musicCapture.error=null;recorder.cancel();liveTracking=null;}
-  else {activeSource = 'demo';$('track-title').textContent = 'NEON DOOR';}
+  else {activeSource = watchingLAN() ? 'live' : 'demo';$('track-title').textContent = watchingLAN() ? 'LAN LIVE' : 'NEON DOOR';}
   updateButtons();
   const options=xrSessionOptions({mode,vrSupported,preference:$('xr-input-mode').value,
     placementMode:$('placement-mode').value,overlayRoot:$('xr-touch-overlay')});
@@ -426,7 +489,7 @@ async function enterXR(mode) {
   try {
     // requestSession is called directly inside the user gesture, before any await.
     const request = navigator.xr.requestSession(type,options.init);
-    if(mode==='live')audio.play().then(()=>{if(!playing){audio.pause();audio.currentTime=0;}}).catch(()=>{});
+    if(mode==='live' && !watchingLAN())audio.play().then(()=>{if(!playing){audio.pause();audio.currentTime=0;}}).catch(()=>{});
     if(mode==='record' && $('record-music').checked)captureAudio.prepare().catch(()=>{});
     const next = await request;
     session = next;sessionMode = mode;controls.enabled=false;
@@ -561,6 +624,9 @@ function resize() {
 new ResizeObserver(resize).observe($('viewport'));
 renderer.setAnimationLoop((time,frame) => {
   const delta=Math.min(clock.getDelta(),.05);
+  const now = performance.now();
+  const viewingLAN = watchingLAN();
+  const cameraFresh = cameraActive && !cameraBusy && now - cameraObservedAt < 1000;
   if(pendingPlacement && xrInputReady && renderer.xr.isPresenting && session?.visibilityState === 'visible') {
     const viewer = frame?.getViewerPose(renderer.xr.getReferenceSpace());
     if (viewer && !viewer.emulatedPosition) {motionPreview.place(renderer.xr.getCamera(), referenceSpaceType.includes('floor'));pendingPlacement=false;}
@@ -590,6 +656,28 @@ renderer.setAnimationLoop((time,frame) => {
       }
     }
   }
+  // The live stream uses the very same observations as the capture preview.
+  // It does not depend on the recorder or send camera images/model files.
+  if (liveRoom.connected && now - livePoseSentAt >= 50) {
+    const hidden = {t:0, visibility:'hidden', head:null, left:null, right:null, body:null};
+    let sample = hidden, initialHeadHeight = null, referenceSpace = liveRole === 'audience' ? 'stage' : 'local';
+    const visible = session ? session.visibilityState === 'visible' : document.visibilityState === 'visible';
+    if ($('lan-share').checked && visible) {
+      if (liveRole === 'performer') {
+        const tracking = cameraFresh ? cameraTracking : sessionMode === 'record' && xrInputReady && !pendingPlacement ? liveTracking : null;
+        const observation = liveTrackingFrame(tracking, {now, observedAt:cameraActive ? cameraObservedAt : now});
+        if (observation) {sample = observation.sample; initialHeadHeight = observation.initialHeadHeight; referenceSpace = observation.referenceSpace;}
+      } else if (liveDevice !== 'desktop' && sessionMode === 'live' && xrInputReady && walls.placed && walls.report.tracking && frame) {
+        sample = sampleAudiencePose(frame, renderer.xr.getReferenceSpace(), stage, {device:liveDevice});
+      }
+    }
+    sharedHead = !!sample?.head;
+    liveRoom.sendPose({sample: sample || hidden, initialHeadHeight, referenceSpace}); livePoseSentAt = now;
+  }
+  const remotePerformance = viewingLAN ? livePerformer.sample(now) : null;
+  livePresence.update(now);
+  livePresence.room.visible = liveRoom.connected && !cameraActive && sessionMode !== 'record' &&
+    (!session || (xrInputReady && !!walls.placed && !!walls.report.tracking && session.visibilityState === 'visible'));
   if(musicAudition && playing && captureAudio.time>=captureAudio.duration){playing=false;finished=true;$('record-status').textContent='試聴が終了しました。';}
   if(activeSource==='take' && playing && playbackTime()>=duration()) {
     if ($('take-loop').checked && duration() > 0) {
@@ -601,16 +689,18 @@ renderer.setAnimationLoop((time,frame) => {
   }
   const t=playbackTime();
   const demoActive=!cameraActive && sessionMode!=='record' && activeSource==='demo' && (playing || finished || t>0);
-  const state=demoActive?cue(finished?DURATION:t):{label:cameraActive?'CAMERA / 推定':sessionMode==='record'?'LIVE TRACKING':activeSource==='take'?'MOTION PREVIEW':'STANDBY',curtain:0};
+  const state=viewingLAN?{label:remotePerformance?'LAN LIVE':'配信・追跡待ち',curtain:0}:demoActive?cue(finished?DURATION:t):{label:cameraActive?'CAMERA / 推定':sessionMode==='record'?'LIVE TRACKING':activeSource==='take'?'MOTION PREVIEW':'STANDBY',curtain:0};
   curtain.visible=state.curtain>.001;curtain.scale.y=Math.max(.001,state.curtain);curtain.position.y=2.5-1.25*state.curtain;
   if(vrm && demoVRMA) {
-    const previewing = cameraActive || sessionMode === 'record' || (!session && activeSource === 'take');
+    const previewing = !viewingLAN && (cameraActive || sessionMode === 'record' || (!session && activeSource === 'take'));
     motionPreview.show(vrm, previewing);
-    vrm.scene.visible = cameraActive ? !!cameraTracking?.sample?.head : sessionMode !== 'record' || (xrInputReady && !pendingPlacement && !!liveTracking?.sample?.head);
+    vrm.scene.visible = viewingLAN ? !!remotePerformance : cameraActive ? cameraFresh && !!cameraTracking?.sample?.head : sessionMode !== 'record' || (xrInputReady && !pendingPlacement && !!liveTracking?.sample?.head);
     if (sessionMode === 'record' && (!xrInputReady || pendingPlacement)) motionPreview.room.visible = false;
     if (previewing) stage.visible = false;
     else if (!session) stage.visible = true;
-    if(cameraActive) {
+    if(viewingLAN) {
+      if(remotePerformance)applyMotionSampleToVRM(vrm,remotePerformance.sample,remotePerformance);
+    } else if(cameraActive) {
       if(cameraTracking)applyMotionSampleToVRM(vrm,cameraTracking.sample,cameraTracking);
       else resetPose();
     } else if(sessionMode==='record') {
@@ -625,6 +715,12 @@ renderer.setAnimationLoop((time,frame) => {
     vrm.update(delta);
   }
   if(time-lastUI>100) {
+    if (liveRoom.connected) {
+      $('lan-status').textContent = `${liveRole === 'performer' ? '出演者として配信' : '観客として接続'} · ${liveRoom.peers.length + 1}人が参加中`;
+      $('lan-tracking').textContent = !$('lan-share').checked ? '自分の姿勢の共有を停止しています。受信は続けます。'
+        : liveRole === 'performer' ? sharedHead ? 'モーションを配信中。観客側では受信した動きを表示します。' : 'カメラを準備するか、HMDの収録画面を開くと配信します。追跡が途切れたモデルは観客側で非表示になります。'
+        : `${remotePerformance ? '出演者の動きを受信中。' : '出演者の配信・追跡を待っています。'} ${sharedHead ? (liveDevice === 'phone' ? 'スマホ位置の顔アバターを共有中（手は共有しません）。' : '自分のAR位置を共有中。') : liveDevice === 'desktop' ? 'PCでは3D視聴のみ。自分の位置は送信しません。' : 'ARで同じステージ位置を配置すると、自分の位置も共有します。'}`;
+    } else {$('lan-tracking').textContent = '';}
     $('phase').textContent=state.label;$('time').textContent=formatTime(t);$('duration').textContent=formatTime(duration());
     $('seek').max=duration();$('seek').value=t;
     $('take-pause').textContent = playing && activeSource === 'take' ? 'プレビューを一時停止' : 'プレビューを再開';
@@ -634,7 +730,7 @@ renderer.setAnimationLoop((time,frame) => {
       const count=countdown!==null?Math.max(0,Math.ceil((countdown-performance.now())/1000)):null;
       $('camera-countdown').textContent=recording?`● ${formatTime(cameraRecorder.duration)}`:count>0?String(count):count===0?'全身を映してください':'';
       $('camera-record').textContent=recording?'保存して終了':cameraMusic.pending?'開始をキャンセル':'収録を開始';
-      const tracked=!!cameraTracking?.sample?.head;
+      const tracked=cameraFresh && !!cameraTracking?.sample?.head;
       $('camera-status').textContent=cameraMusic.error || (cameraMusic.preparing?'音楽を準備しています…':recording?`収録中 ${formatTime(cameraRecorder.duration)} / ${cameraMusic.withMusic?'01:12':'03:00'} · ${cameraRecorder.frameCount}フレーム · ${tracked?'カメラで姿勢を推定中':'身体を見失いました。全身を映してください。'}`:count!==null?(count>0?`${count}秒後に開始します。全身が映る位置へ移動してください。`:'身体の検出を待っています。顔・肩・腰を画面内へ。'):tracked?`カメラ推定 ${cameraTracking.bodyCount}関節。動きを確認して収録を開始してください。`:'顔・肩・腰を画面内へ。全身が映る位置にスマホを固定してください。');
       updateButtons();
     }
@@ -648,16 +744,18 @@ renderer.setAnimationLoop((time,frame) => {
       const detail=musicCapture.error || (musicCapture.preparing?'音楽を準備中 · トリガーでキャンセル':countdown!==null?`${musicHint} · 追跡が安定したら同時に開始`:recording?`${musicHint} · トリガーで保存してプレビュー`:`${musicHint} · トリガーで収録 · グリップで正面合わせ`);
       const bodyHint = trackingReport.bodyStatus === 'tracked' ? `身体${trackingReport.bodyCount}関節` : '身体は頭・手から推定';
       const trackingHint = !liveTracking?.sample?.head ? '頭の追跡を待っています' : `左手${liveTracking.sample.left?'○':'×'} 右手${liveTracking.sample.right?'○':'×'} · ${bodyHint}`;
-      hud.update(renderer.xr.getCamera(),title,`${trackingHint} / ${detail}`,true,recording);
+      hud.update(renderer.xr.getCamera(),liveRoom.connected && liveRole==='performer'?`LAN配信 / ${title}`:title,`${trackingHint} / ${detail}`,true,recording);
       if(recorder.state!=='complete')$('record-status').textContent=recording?`${title} · ${recorder.frameCount} フレーム`:detail;
     } else if(session) {
       const [title, detail] = walls.guidance();
-      hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:title,playing?'トリガーで停止 · グリップで再配置':detail,sessionInputMode!=='touch');
+      const liveTitle = viewingLAN && walls.placed ? remotePerformance ? 'LAN LIVE / 配信中' : 'LAN LIVE / 配信待ち' : title;
+      const liveDetail = viewingLAN && walls.placed ? '観客の顔も表示中 · グリップで再配置 · 終了は下のボタン' : detail;
+      hud.update(renderer.xr.getCamera(),playing?`${formatTime(t)} / ${formatTime(DURATION)}`:liveTitle,playing?'トリガーで停止 · グリップで再配置':liveDetail,sessionInputMode!=='touch');
       if(sessionInputMode==='touch') {
-        $('xr-touch-status').textContent=playing?`${formatTime(t)} / ${formatTime(DURATION)} · ライブ再生中`:`${title}。${detail}`;
+        $('xr-touch-status').textContent=viewingLAN && walls.placed?`${liveTitle} · 顔アバターの位置はスマホ位置が目安です。`:playing?`${formatTime(t)} / ${formatTime(DURATION)} · ライブ再生中`:`${title}。${detail}`;
         $('xr-touch-place').disabled=!!walls.placed || !walls.candidate || !walls.report.tracking;
-        $('xr-touch-play').disabled=!walls.placed || !walls.report.tracking;
-        $('xr-touch-play').textContent=playing?'ライブを停止':'ライブを再生';
+        $('xr-touch-play').disabled=viewingLAN || !walls.placed || !walls.report.tracking;
+        $('xr-touch-play').textContent=viewingLAN?'LANライブを受信':playing?'ライブを停止':'ライブを再生';
         $('xr-touch-mode').textContent=walls.mode==='auto'?'距離指定へ':'壁の自動検出へ';
       }
       const report = walls.diagnostics();

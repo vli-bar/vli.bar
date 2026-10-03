@@ -4,3 +4,6 @@ local-assets/
 *.vrm
 !public/demo/vli-performer.vrm
 .DS_Store
+
+# Private LAN TLS keys and development certificates
+.lan-certs/
