@@ -1,0 +1,11 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Marker AR smoke test — synthetic camera</title>
+<style>
+body{max-width:1000px;margin:24px auto;padding:0 16px;background:#111827;color:#eef2ff;font:16px/1.5 system-ui}button{font:inherit;padding:10px;margin:4px;background:#91efcf;color:#10251c;border:0;border-radius:6px}button:disabled{opacity:.5}#viewport{position:relative;margin:16px auto;background:#202c40;overflow:hidden}#viewport video,#viewport canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}dl{display:grid;grid-template-columns:180px 1fr}dd{margin:0}pre{white-space:pre-wrap}[hidden]{display:none!important}
+</style></head><body><h1>Marker AR smoke test</h1>
+<p>実カメラを使わず、配布SVGをcanvas.captureStreamで供給します。検出・姿勢推定・投影・stage配置は本体と同じ実装です。水色の枠が黒いマーカー外枠に重なり、橙色のステージ中央がマーカー中央と一致します。</p>
+<button id="start">Start synthetic marker AR</button><button id="stop" disabled>Stop marker AR</button>
+<button id="hide" disabled>Hide marker</button><button id="show" disabled>Show marker</button><button id="rotate" disabled>Rotate marker 90°</button><button id="portrait" disabled>Portrait frame</button><button id="landscape" disabled>Landscape frame</button>
+<p id="status" role="status">Not started</p>
+<dl><dt>Tracked</dt><dd id="tracked">false</dd><dt>Frame dimensions</dt><dd id="dimensions">—</dd><dt>Stream tracks</dt><dd id="tracks">none</dd><dt>Alignment error</dt><dd id="alignment">—</dd><dt>Transitions</dt><dd id="transitions">—</dd></dl>
+<div id="viewport"><video id="video" muted playsinline></video></div><canvas id="source" width="640" height="480" hidden></canvas><pre id="result">Not started</pre>
+<script type="module" src="./marker-smoke.js"></script></body></html>

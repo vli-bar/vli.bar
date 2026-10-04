@@ -9,7 +9,8 @@ const SOURCE = fileURLToPath(import.meta.url);
 const MANIFEST = 'manifest.sha256.json';
 const FILES = ['server/lan-server.js', 'src/live-protocol.js', 'scripts/create-lan-cert.mjs', 'scripts/start-offline-lan.mjs'];
 export const REQUIRED_OFFLINE_ASSETS = [
-  'index.html', 'help/lan-offline.html', 'demo/vli-performer.vrm', 'demo/neon-door.wav', 'demo/neon-door.vrma',
+  'index.html', 'help/lan-offline.html', 'markers/index.html', 'markers/stage.svg',
+  'demo/vli-performer.vrm', 'demo/neon-door.wav', 'demo/neon-door.vrma',
   'vendor/mediapipe/pose_landmarker_lite.task', 'vendor/mediapipe/LICENSE',
   'vendor/mediapipe/wasm/vision_wasm_internal.js', 'vendor/mediapipe/wasm/vision_wasm_internal.wasm',
   'vendor/mediapipe/wasm/vision_wasm_nosimd_internal.js', 'vendor/mediapipe/wasm/vision_wasm_nosimd_internal.wasm',
@@ -60,7 +61,7 @@ export async function validateOfflineAssets(distRoot) {
     if (target.startsWith('../') || !available.has(target)) throw new Error(`Missing local asset: ${from} -> ${value}`);
   };
   for (const filename of files) {
-    if (!/\.(?:html|css|js|mjs)$/.test(filename)) continue;
+    if (!/\.(?:html|svg|css|js|mjs)$/.test(filename)) continue;
     const text = await readFile(path.join(distRoot, filename), 'utf8');
     if (filename.endsWith('.html')) {
       for (const match of text.matchAll(/<(script|link|img|audio|video|source|iframe)\b([^>]*)>/gi)) {
@@ -71,6 +72,11 @@ export async function validateOfflineAssets(distRoot) {
         } else resolveReference(filename, attributes.src);
         if (tag === 'video') resolveReference(filename, attributes.poster);
       }
+    } else if (filename.endsWith('.svg')) {
+      // Markers must remain usable without remote images, fonts or scripts.
+      for (const match of text.matchAll(/\b(?:href|xlink:href)\s*=\s*["']([^"']*)["']/gi)) resolveReference(filename, match[1]);
+      for (const match of text.matchAll(/url\(\s*["']?([^"')\s]+)["']?\s*\)/gi)) resolveReference(filename, match[1]);
+      for (const match of text.matchAll(/@import\s+["']([^"']+)["']/gi)) resolveReference(filename, match[1]);
     } else if (filename.endsWith('.css')) {
       for (const match of text.matchAll(/url\(\s*["']?([^"')\s]+)["']?\s*\)/gi)) resolveReference(filename, match[1]);
       for (const match of text.matchAll(/@import\s+["']([^"']+)["']/gi)) resolveReference(filename, match[1]);
@@ -141,7 +147,7 @@ export async function buildOfflineKit({repoRoot = fileURLToPath(new URL('..', im
     const runtimeName = platform === 'win32' ? 'node.exe' : 'node';
     await copyRegular(executable, path.join(temporary, 'runtime', runtimeName), true);
     await copyRegular(runtimeLicense, path.join(temporary, 'runtime/LICENSE'));
-    for (const [name, directory] of [['three', 'three'], ['@pixiv/three-vrm', 'pixiv-three-vrm'], ['@pixiv/three-vrm-animation', 'pixiv-three-vrm-animation'], ['@mediapipe/tasks-vision', 'mediapipe-tasks-vision']]) {
+    for (const [name, directory] of [['three', 'three'], ['@pixiv/three-vrm', 'pixiv-three-vrm'], ['@pixiv/three-vrm-animation', 'pixiv-three-vrm-animation'], ['@mediapipe/tasks-vision', 'mediapipe-tasks-vision'], ['js-aruco2', 'js-aruco2']]) {
       for (const filename of ['LICENSE', 'LICENSE.txt', 'LICENSE.md', 'NOTICE', 'NOTICE.txt']) {
         const source = path.join(repository, 'node_modules', name, filename);
         if (await exists(source)) await copyRegular(source, path.join(temporary, 'licenses', directory, filename));
@@ -155,7 +161,7 @@ export async function buildOfflineKit({repoRoot = fileURLToPath(new URL('..', im
       const text = platform === 'win32' ? '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\n"%~dp0runtime\\node.exe" "%~dp0scripts\\start-offline-lan.mjs" %*\r\n' : shell;
       await writeFile(path.join(temporary, launcher), text, {mode: 0o755});
     }
-    await writeFile(path.join(temporary, 'START-HERE.txt'), `vli.bar 完全ローカル LAN キット\n\n対象: ${platform} / ${arch} (${nodeVersion})\nこの OS・CPU 用の Node.js を同梱しています。別の OS・CPU には移植できません。\n\n1. 同じ会場 Wi-Fi/LAN に配信用 PC と閲覧端末を接続します。外部インターネットは不要です。\n2. ${launchers[0]} を起動します。会場で npm / Node.js のインストールは不要です。\n3. 初回は画面に示された CA 証明書を各端末へコピーし、手動で信頼させてください。\n4. 表示された HTTPS URL を開き、同じルーム名・合言葉で参加します。\n\n初回および接続先 IP 変更時の証明書発行には、その PC の OpenSSL が必要です。\nmacOS の標準 OpenSSL を想定しています。Windows/Linux は事前配置を確認してください。\nブラウザ・ARCore・端末の AR 対応と証明書の信頼設定も事前に用意してください。\nローカルヘルプは起動後 /help/lan-offline.html を開いてください。\n\n秘密鍵・合言葉・ユーザー VRM はこのキットに含めていません。\n初回起動後に生成される .lan-certs 内の秘密鍵は配布しないでください。\n\n整合性確認: ${platform === 'win32' ? 'runtime\\node.exe' : './runtime/node'} scripts/build-offline-kit.mjs --verify .\nmanifest.sha256.json は配布時の全ファイルを列挙します（manifest 自身と起動後の証明書を除く）。\n`);
+    await writeFile(path.join(temporary, 'START-HERE.txt'), `vli.bar 完全ローカル LAN キット\n\n対象: ${platform} / ${arch} (${nodeVersion})\nこの OS・CPU 用の Node.js を同梱しています。別の OS・CPU には移植できません。\n\n1. 同じ会場 Wi-Fi/LAN に配信用 PC と閲覧端末を接続します。外部インターネットは不要です。\n2. ${launchers[0]} を起動します。会場で npm / Node.js のインストールは不要です。\n3. 初回は画面に示された CA 証明書を各端末へコピーし、手動で信頼させてください。\n4. 表示された HTTPS URL を開き、同じルーム名・合言葉で参加します。\n\n初回および接続先 IP 変更時の証明書発行には、その PC の OpenSSL が必要です。\nmacOS の標準 OpenSSL を想定しています。Windows/Linux は事前配置を確認してください。\nブラウザ・ARCore・端末の AR 対応と証明書の信頼設定も事前に用意してください。\niPhone は Safari で開き、CA インストール後に「一般 → 情報 → 証明書信頼設定」で完全な信頼を有効にします。\nマーカー AR の印刷用紙は dist/markers/index.html、黒い外枠は既定 15 cm です。100% で印刷し、実測値を設定してください。\nローカルヘルプは起動後 /help/lan-offline.html を開いてください。\n\n秘密鍵・合言葉・ユーザー VRM はこのキットに含めていません。\n初回起動後に生成される .lan-certs 内の秘密鍵は配布しないでください。\n\n整合性確認: ${platform === 'win32' ? 'runtime\\node.exe' : './runtime/node'} scripts/build-offline-kit.mjs --verify .\nmanifest.sha256.json は配布時の全ファイルを列挙します（manifest 自身と起動後の証明書を除く）。\n`);
     const files = [];
     for (const filename of await fileList(temporary)) {
       const absolute = path.join(temporary, filename), info = await lstat(absolute);

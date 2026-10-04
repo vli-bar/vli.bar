@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>vli.bar カメラARマーカー</title>
+<style>
+*{box-sizing:border-box}body{margin:0 auto;padding:12px;max-width:210mm;color:#111;background:white;font:16px/1.6 system-ui,sans-serif}h1{font-size:22px;margin:0 0 8px}p{margin:8px 0}.sheet{text-align:center}.marker{display:block;width:187.5mm;height:auto;max-width:100%;margin:auto}.top{font-weight:bold;margin:16px 0 0}.measure{display:block;width:100mm;border-top:2px solid #000;margin:12px auto 0;font-size:12px}button,a{font:inherit}button{padding:8px 16px;cursor:pointer}.controls{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.hint{font-size:14px}@page{size:A4 portrait;margin:10mm}@media print{body{padding:0;max-width:none}.controls,.screen{display:none}.marker{max-width:none}h1{font-size:18px}.top{margin-top:10px}p{margin:4px 0}.hint{font-size:11px}}
+</style></head><body>
+<h1>vli.bar カメラARマーカー</h1>
+<div class="controls"><button type="button" id="print-marker">このページを印刷</button><a href="stage.svg" download="vli-bar-stage.svg">SVGを保存</a><a href="../">アプリへ戻る</a></div>
+<p>黒い正方形の一辺：<strong>15cm</strong>（白い余白を含めない）</p>
+<p class="screen">A4用紙に「実際のサイズ / 100%」で印刷してください。自動縮小・余白調整を無効にし、印刷後に黒い正方形を定規で測ってください。</p>
+<div class="sheet"><p class="top">↑ この向きを上にして壁へ貼る</p><img class="marker" src="stage.svg" alt="ARUCO MIP 36h12 ID 0、黒い外枠15cmのカメラARマーカー"><span class="measure">この線は10cm（印刷倍率の確認用）</span></div>
+<p class="hint">ステージを表示したい中心に、平らに貼ります。白い余白を残し、折り目・反射・物による隠れを避けてください。アプリの「マーカーの一辺」を黒い正方形の実測値に合わせ、マーカー全体を背面カメラに映します。マーカーが見えなくなるとステージも非表示になります。</p>
+<p class="hint">ARUCO_MIP_36h12 / ID 0 · カメラ位置は画像からの推定です。部屋全体の空間認識ではありません。</p>
+<p class="hint screen"><a href="LICENSE.txt">マーカー検出ライブラリ js-aruco2 のライセンス</a></p>
+<script src="print.js" defer></script></body></html>

@@ -126,6 +126,58 @@ test('video playback blocked by the browser can be cancelled without retaining i
   assert.equal(f.calls.some(call => call[0] === 'import'), false); assert.equal(f.statuses.at(-1).state, 'stopped');
 });
 
+test('camera video is muted and inline before assigning and playing an iPhone stream', async () => {
+  const f = fixture();
+  const attributes = new Map();
+  f.video.setAttribute = (name, value) => attributes.set(name, value);
+  let source = null;
+  Object.defineProperty(f.video, 'srcObject', {
+    get: () => source,
+    set(value) {
+      if (value) {
+        assert.equal(f.video.muted, true);
+        assert.equal(f.video.defaultMuted, true);
+        assert.equal(f.video.playsInline, true);
+        assert.equal(attributes.has('muted'), true);
+        assert.equal(attributes.has('playsinline'), true);
+      }
+      source = value;
+    },
+  });
+  f.video.play = () => { assert.equal(source, f.cameraStream); return Promise.resolve(); };
+  assert.equal(await f.camera.start(), true);
+  f.camera.dispose();
+});
+
+test('Safari track mute ends capture immediately and late inference cannot extend the interrupted take', async () => {
+  const detection = deferred(); const nextStream = stream(); let requests = 0;
+  const f = fixture({ detect: () => detection.promise, media: () => Promise.resolve(++requests === 1 ? f.cameraStream : nextStream) });
+  await f.camera.start(); await f.frame(1000, 0);
+  f.cameraStream.track.emit('mute');
+  assert.equal(f.camera.active, false); assert.equal(f.camera.ready, false);
+  assert.equal(f.cameraStream.track.stops, 1); assert.equal(f.video.srcObject, null);
+  assert.equal(f.statuses.at(-1).state, 'interrupted');
+  assert.equal(f.cameraStream.track.listenerCount, 0);
+  detection.resolve({ landmarks: [[]] }); await flush();
+  assert.equal(f.results.length, 0); assert.equal(f.task.closed, 1);
+  assert.equal(await f.camera.start(), true, 'the next user action can obtain a new camera stream');
+  f.cameraStream.track.emit('mute'); f.cameraStream.track.emit('ended');
+  assert.equal(f.camera.ready, true, 'old track events cannot interrupt the replacement stream');
+  f.camera.dispose(); assert.equal(nextStream.track.stops, 1);
+});
+
+test('track interruption while the model loads cancels startup and disposes the late model', async () => {
+  const model = deferred(); const f = fixture();
+  f.api.PoseLandmarker.createFromOptions = () => model.promise;
+  const pending = f.camera.start(); await flush();
+  f.cameraStream.track.emit('mute');
+  assert.equal(await pending, false); assert.equal(f.statuses.at(-1).state, 'interrupted');
+  const lateTask = { closed: 0, close() { this.closed++; } };
+  model.resolve(lateTask); await flush();
+  assert.equal(lateTask.closed, 1); assert.equal(f.cameraStream.track.stops, 1);
+  assert.equal(f.frames.size, 0); assert.equal(f.doc.listenerCount, 0);
+});
+
 test('inference never overlaps, duplicate frames are skipped, and detection is limited to 15fps', async () => {
   let detection = deferred(); const f = fixture({ detect: () => detection.promise });
   await f.camera.start(); await f.frame(1000, 0);

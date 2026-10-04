@@ -54,6 +54,19 @@ test('a cancelled request cannot prepare audio or start a playback clock', async
   assert.equal(await startTakePlayback({ audio: { prepare: fail, play: fail }, withMusic: true, isCurrent: () => false, onStart: fail }), false);
 });
 
+test('marker AR resumes the selected take only while the marker is visible', async () => {
+  const state = {source:'take',take,markerActive:true,markerTracked:true};
+  assert.equal(canResumeTake(state),true);
+  for (const change of [{markerTracked:false},{visibility:'hidden'},{cameraOpen:true},{sessionMode:'record'}]) {
+    assert.equal(canResumeTake({...state,...change}),false);
+  }
+  const prepared = deferred(), calls = [];
+  const pending = startTakePlayback({audio:{prepare:()=>prepared.promise,play:()=>calls.push('play')},withMusic:true,
+    isCurrent:()=>canResumeTake(state),onStart:()=>calls.push('start')});
+  state.markerTracked = false;prepared.resolve();
+  assert.equal(await pending,false);assert.deepEqual(calls,[]);
+});
+
 test('ending or repositioning AR while music prepares invalidates the pending start', async () => {
   for (const transition of ['end', 'reposition', 'tracking-loss', 'source-change']) {
     const ready = deferred(); const calls = []; let request = 1, state = { ...placedAR };

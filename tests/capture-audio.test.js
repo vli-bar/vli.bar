@@ -123,6 +123,40 @@ test('play requires prepared running audio; preparation rejects unresolved activ
   await assert.rejects(transport.prepare(), /終了/);
 });
 
+test('Safari interruption pauses the soundtrack clock and a new gesture resumes the saved offset without reloading', async () => {
+  const { transport, context, sources, calls } = fixture();
+  await transport.prepare(); transport.play(4);
+  context.currentTime = 12.5;
+  context.state = 'interrupted';
+  assert.equal(transport.ready, false); assert.equal(transport.playing, false);
+  assert.equal(transport.time, 6.5);
+  transport.pause();
+  assert.equal(transport.time, 6.5); assert.equal(sources[0].stopped, true);
+  const resume = transport.prepare();
+  assert.equal(calls.resume, 2, 'resume is invoked inside the new gesture, before its first await');
+  await resume;
+  assert.equal(transport.playing, false, 'preparation does not unexpectedly resume a paused source');
+  transport.play(transport.time);
+  assert.equal(sources[1].started.offset, 6.5);
+  assert.equal(transport.playing, true);
+  assert.equal(calls.fetch, 1); assert.equal(calls.decode, 1);
+});
+
+test('an unresolved Safari interruption remains retryable and seeking during it cannot start sound', async () => {
+  const { transport, context, sources } = fixture();
+  await transport.prepare(); transport.play(4);
+  context.state = 'interrupted';
+  transport.seek(12);
+  assert.equal(transport.time, 12); assert.equal(transport.playing, false);
+  assert.equal(sources.length, 1); assert.equal(sources[0].stopped, true);
+  context.resume = () => Promise.resolve();
+  await assert.rejects(transport.prepare(), /もう一度/);
+  assert.equal(transport.time, 12); assert.equal(transport.ready, false);
+  context.resume = () => { context.state = 'running'; return Promise.resolve(); };
+  await transport.prepare(); transport.play(transport.time);
+  assert.equal(sources[1].started.offset, 12); assert.equal(transport.playing, true);
+});
+
 test('failed fetches can retry and failures are exposed to the caller', async () => {
   let available = false;
   const { transport, calls } = fixture({ fetchAudio: async () => available

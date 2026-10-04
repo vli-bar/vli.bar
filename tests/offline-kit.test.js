@@ -31,6 +31,7 @@ async function fixture(t, {realNode = false} = {}) {
   await put('node_modules/@pixiv/three-vrm/LICENSE', 'vrm license fixture');
   await put('node_modules/@pixiv/three-vrm-animation/LICENSE', 'animation license fixture');
   await put('node_modules/@mediapipe/tasks-vision/LICENSE', 'mediapipe license fixture');
+  await put('node_modules/js-aruco2/LICENSE.txt', 'aruco MIT license fixture');
   await put('LICENSE', 'application license fixture');
   const nodeLicensePath = await put('node-runtime/LICENSE', 'node runtime license fixture');
   const fakeNode = await put('node-runtime/node', '#!/bin/sh\nprintf "v24.16.0\\n"\n'); await chmod(fakeNode, 0o755);
@@ -54,7 +55,7 @@ test('offline kit contains all local assets, runtime and licenses, while private
   assert.equal(path.basename(built.directory), `vli-bar-offline-${process.platform}-${process.arch}`);
   const files = await listing(built.directory);
   for (const asset of REQUIRED_OFFLINE_ASSETS) assert.ok(files.includes(`dist/${asset}`), asset);
-  for (const file of ['server/lan-server.js', 'src/live-protocol.js', 'scripts/create-lan-cert.mjs', 'scripts/start-offline-lan.mjs', 'scripts/build-offline-kit.mjs', 'node_modules/ws/LICENSE', 'runtime/LICENSE', 'licenses/three/LICENSE', 'licenses/pixiv-three-vrm/LICENSE', 'licenses/pixiv-three-vrm-animation/LICENSE', 'licenses/mediapipe-tasks-vision/LICENSE', 'LICENSE']) assert.ok(files.includes(file), file);
+  for (const file of ['server/lan-server.js', 'src/live-protocol.js', 'scripts/create-lan-cert.mjs', 'scripts/start-offline-lan.mjs', 'scripts/build-offline-kit.mjs', 'node_modules/ws/LICENSE', 'runtime/LICENSE', 'licenses/three/LICENSE', 'licenses/pixiv-three-vrm/LICENSE', 'licenses/pixiv-three-vrm-animation/LICENSE', 'licenses/mediapipe-tasks-vision/LICENSE', 'licenses/js-aruco2/LICENSE.txt', 'LICENSE']) assert.ok(files.includes(file), file);
   assert.ok(files.every(file => !file.includes('private') && !file.includes('ca.key') && !file.includes('.env') && !file.includes('room-token') && !file.includes('src/main') && !file.includes('unrelated')));
   const manifest = JSON.parse(await readFile(path.join(built.directory, 'manifest.sha256.json'), 'utf8'));
   assert.deepEqual(manifest.files.map(file => file.path).sort(), files.filter(file => file !== 'manifest.sha256.json'));
@@ -98,11 +99,17 @@ test('builder refuses an existing kit so newly created certificate keys cannot b
   assert.ok(await verifyOfflineKit(built.directory), 'runtime-generated certificates are outside the immutable manifest');
 });
 
-test('required model and offline help must be present before packaging', async t => {
+test('required model, offline help and printable marker must be present before packaging', async t => {
   const f = await fixture(t);
   await rm(path.join(f.repoRoot, 'dist/help/lan-offline.html'));
   await assert.rejects(f.build(), /Offline asset missing.*help/);
   await f.put('dist/help/lan-offline.html', '<p>offline</p>');
+  await rm(path.join(f.repoRoot, 'dist/markers/stage.svg'));
+  await assert.rejects(f.build(), /Offline asset missing.*markers\/stage/);
+  await f.put('dist/markers/stage.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  await rm(path.join(f.repoRoot, 'dist/markers/index.html'));
+  await assert.rejects(f.build(), /Offline asset missing.*markers\/index/);
+  await f.put('dist/markers/index.html', '<img src="./stage.svg">');
   await rm(path.join(f.repoRoot, 'dist/vendor/mediapipe/pose_landmarker_lite.task'));
   await assert.rejects(f.build(), /Offline asset missing.*pose_landmarker/);
 });
@@ -118,6 +125,12 @@ test('static dependency closure rejects missing chunks, external runtime resourc
   await assert.rejects(f.build(), /External runtime asset/);
   await f.put('dist/index.html', '<script src="./assets/main.js"></script><a href="https://example.com/documentation">Optional docs</a>');
   assert.ok((await validateOfflineAssets(path.join(f.repoRoot, 'dist'))).length > 0, 'ordinary links do not become runtime dependencies');
+  await f.put('dist/markers/stage.svg', '<svg><image href="https://cdn.example.com/marker.png"/></svg>');
+  await assert.rejects(validateOfflineAssets(path.join(f.repoRoot, 'dist')), /External runtime asset.*markers\/stage/);
+  await f.put('dist/markers/stage.svg', '<svg><use xlink:href="./missing.svg#marker"/></svg>');
+  await assert.rejects(validateOfflineAssets(path.join(f.repoRoot, 'dist')), /Missing local asset.*markers\/stage/);
+  await f.put('dist/markers/stage.svg', '<svg><use href="#marker"/><style>rect{fill:url(#fill)}</style></svg>');
+  assert.ok((await validateOfflineAssets(path.join(f.repoRoot, 'dist'))).length > 0);
 });
 
 test('asset symlinks are rejected and failed builds leave no partial distribution', {skip: process.platform === 'win32'}, async t => {

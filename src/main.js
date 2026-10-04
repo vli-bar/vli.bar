@@ -25,6 +25,9 @@ import { createLivePresence, sampleAudiencePose } from './live-presence.js';
 import { discoverLocalVenue } from './local-venue.js';
 import { resolvePlaybackSource, canResumeTake, startTakePlayback, applyPlaybackMotion } from './playback-source.js';
 import { LatestLoad } from './latest-load.js';
+import { MarkerAR } from './marker-ar.js';
+import { fitCameraFrame, placeMarkerStage, markerAudiencePose } from './marker-stage.js';
+import { isAppleMobile, liveDeviceType, arViewMode } from './device-support.js';
 
 const $ = id => document.getElementById(id);
 const asset = path => new URL(path, document.baseURI).href;
@@ -69,6 +72,15 @@ let referenceSpaceType = 'local', liveTracking = null, previewAfterXR = false, a
 let sessionInputMode = 'controller', pendingTouchPlacement = false;
 let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0, cameraObservedAt = -Infinity;
 const cameraAvailable = isSecureContext && !!navigator.mediaDevices?.getUserMedia;
+let markerActive = false, markerBusy = false, markerRequest = 0, markerReturnFocus = null;
+const markerAR = new MarkerAR({video: $('marker-video'), onStatus(event) {
+  if (!markerActive) return;
+  $('marker-status').textContent = event.message;
+  if (['hidden', 'ended', 'interrupted', 'error'].includes(event.state)) endMarker(event.message);
+}});
+// iOS Files may not recognize custom VRM/VRMA UTIs. Validate file contents in
+// the loaders instead of letting its picker disable otherwise valid files.
+if (isAppleMobile(navigator)) for (const id of ['model', 'motion-file']) $(id).removeAttribute('accept');
 const modelLoad = new LatestLoad({onChange() {loading = modelLoad.pending;updateButtons();}});
 const motionLoad = new LatestLoad();
 let liveRole = null, liveDevice = 'desktop', livePoseSentAt = -Infinity, sharedHead = false, localVenue = null;
@@ -101,12 +113,11 @@ const liveRoom = new LiveRoom({
 });
 function watchingLAN() {return liveRoom.connected && liveRole === 'audience';}
 function liveDeviceChoice() {
-  const choice = $('lan-device').value;
-  return choice !== 'auto' ? choice : vrSupported ? 'headset' : /Android/i.test(navigator.userAgent) ? 'phone' : 'desktop';
+  return liveDeviceType({preference: $('lan-device').value, vrSupported, navigator});
 }
 $('lan-form').onsubmit = async event => {
   event.preventDefault();
-  if (!localVenue || session || xrBusy || cameraActive || cameraBusy || !ready()) return;
+  if (!localVenue || session || xrBusy || markerActive || cameraActive || cameraBusy || !ready()) return;
   motionLoad.cancel();
   liveRole = $('lan-role').value; liveDevice = liveDeviceChoice(); livePoseSentAt = -Infinity;
   try {
@@ -152,7 +163,7 @@ const cameraMotion = new CameraMotion({video: $('camera-video'), maxFps: 15,
   onStatus(event) {
     if(!cameraActive && !cameraBusy)return;
     $('camera-status').textContent = event.message;
-    if(['hidden','ended','error'].includes(event.state))endCamera({autoplay: false, message: event.message});
+    if(['hidden','ended','interrupted','error'].includes(event.state))endCamera({autoplay: false, message: event.message});
   },
 });
 
@@ -160,19 +171,21 @@ function ready() { return !!vrm && !!demoVRMA && !loading; }
 function updateButtons() {
   const cameraOpen = cameraActive || cameraBusy;
   const joining = liveRoom.state === 'connecting';
-  const busy = xrBusy || !!session || cameraOpen || joining;
+  const busy = xrBusy || !!session || cameraOpen || markerActive || joining;
   const headset = vrSupported || (arSupported && xrInputMode($('xr-input-mode').value, vrSupported) === 'controller');
   const viewingLAN = watchingLAN();
   $('stop').textContent = viewingLAN ? 'LANから退出' : '停止・リセット';
   $('play').disabled = !ready() || busy || viewingLAN;
   $('model').disabled = loading || busy;
   $('motion-file').disabled = busy || viewingLAN;
-  $('ar').disabled = !ready() || !arSupported || busy;
+  $('ar').disabled = !ready() || !arViewMode({arSupported, cameraAvailable}) || busy;
+  $('marker-start').disabled = !ready() || !cameraAvailable || busy;
+  $('marker-size').disabled = busy;
   $('record-xr').disabled = !ready() || !headset || busy || viewingLAN;
   $('record-music').disabled = xrBusy || !!session || cameraMusic.pending || cameraRecorder.state==='recording';
   $('music-check').disabled = !ready() || busy || viewingLAN;
   $('take-play').disabled = !ready() || !selectedTake || busy || viewingLAN;
-  $('take-ar').disabled = !ready() || !selectedTake || !arSupported || busy || viewingLAN;
+  $('take-ar').disabled = !ready() || !selectedTake || !arViewMode({arSupported, cameraAvailable}) || busy || viewingLAN;
   $('playback-source').disabled = busy || viewingLAN;
   $('playback-take').disabled = !selectedTake;
   $('playback-source').value = playbackChoice;
@@ -235,7 +248,7 @@ function stop(reset = true) {
   if (wasAudition) {activeSource = resolvePlaybackSource(playbackChoice, selectedTake, {watchingLAN: watchingLAN()});updateTrackTitle();updateButtons();}
 }
 async function playDemo({restart = true} = {}) {
-  if(!ready() || watchingLAN())return;
+  if(!ready() || watchingLAN() || (markerActive && (markerBusy || !markerAR.tracked)))return;
   if (restart) choosePlayback('demo');
   else {stop(false);if (audio.ended) audio.currentTime = 0;}
   updateButtons();
@@ -254,7 +267,7 @@ async function playDemo({restart = true} = {}) {
 function playTake({autoplay = true} = {}) {
   if(!ready() || !selectedTake)return;
   choosePlayback('take');
-  if (!session) {
+  if (!session && !markerActive) {
     camera.position.set(0, 1.3, 3.8);controls.target.set(0, .95, 0);controls.update();
     $('stage').scrollIntoView({behavior: 'smooth', block: 'center'});
   }
@@ -268,6 +281,7 @@ async function resumeTake() {
   const isCurrent = () => request === playRequest && session === currentSession && selectedTake === take && canResumeTake({
     source: activeSource, take, sessionMode, xrBusy, cameraOpen: cameraActive || cameraBusy,
     inputReady: xrInputReady, placed: !!walls.placed, tracking: !!walls.report.tracking,
+    markerActive, markerTracked: !markerBusy && markerAR.tracked,
     visibility: session?.visibilityState ?? document.visibilityState,
   });
   if (!isCurrent()) return;
@@ -296,7 +310,7 @@ function toggleStagePlayback() {
   return playDemo({restart: false});
 }
 async function startCamera() {
-  if(!ready() || watchingLAN() || liveRoom.state === 'connecting' || session || xrBusy || cameraActive || cameraBusy)return;
+  if(!ready() || watchingLAN() || markerActive || liveRoom.state === 'connecting' || session || xrBusy || cameraActive || cameraBusy)return;
   stop();activeSource='demo';cameraBusy=true;cameraActive=true;cameraTracking=null;cameraObservedAt=-Infinity;
   const request=++cameraRequest;
   cameraRecorder.cancel();cameraMusic.cancel();cameraMusic.error=null;cameraSampler.reset();
@@ -315,7 +329,7 @@ async function startCamera() {
   } catch(error) {
     if(request!==cameraRequest)return;
     const message=error.name==='NotAllowedError'?'カメラが許可されていません。ブラウザのカメラ権限を確認して、もう一度準備してください。'
-      :error.name==='NotFoundError'?'カメラが見つかりません。カメラのあるAndroidスマホで開いてください。'
+      :error.name==='NotFoundError'?'カメラが見つかりません。カメラのあるiPhone・Androidなどで開いてください。'
       :'カメラを準備できません。カメラを使う他のアプリを閉じ、通信とブラウザを確認してください。';
     endCamera({autoplay:false,message});
   } finally {if(request===cameraRequest)updateButtons();}
@@ -344,7 +358,7 @@ async function cameraRecordAction() {
 $('camera-start').onclick=startCamera;
 $('camera-record').onclick=cameraRecordAction;
 $('camera-stop').onclick=()=>endCamera();
-if(!cameraAvailable)$('camera-status').textContent='カメラ収録にはHTTPSとカメラ対応ブラウザが必要です。AndroidのChromeで開いてください。';
+if(!cameraAvailable)$('camera-status').textContent='カメラ収録にはHTTPSとカメラ対応ブラウザが必要です。iPhoneのSafari・AndroidのChromeで開いてください。';
 window.addEventListener('pagehide',()=>{if(cameraActive || cameraBusy)endCamera({autoplay:false});});
 
 async function loadModel(url) {
@@ -428,9 +442,10 @@ $('music-check').onclick = async () => {
 };
 $('demo-motion').onclick = () => {if(demoVRMA){stop();acceptTake(demoVRMA);}};
 $('demo-reset').onclick = () => {choosePlayback('demo');status('デモに戻しました。ライブを再生できます。');};
-$('volume').oninput = () => {const volume=Number($('volume').value);audio.volume=volume;captureAudio.setVolume(volume);};
-$('volume').addEventListener('input',()=>{$('xr-touch-volume').value=$('volume').value;});
-$('xr-touch-volume').oninput=()=>{const volume=Number($('xr-touch-volume').value);audio.volume=volume;captureAudio.setVolume(volume);$('volume').value=volume;};
+for (const id of ['volume','xr-touch-volume','marker-volume']) $(id).oninput = () => {
+  const volume = Number($(id).value);audio.volume = volume;captureAudio.setVolume(volume);
+  for (const other of ['volume','xr-touch-volume','marker-volume']) $(other).value = volume;
+};
 $('seek').oninput = () => {
   const time = Number($('seek').value);
   finished = false;
@@ -501,6 +516,54 @@ function restorePreview() {
   motionPreview.reset();liveTracking = null;
   renderer.setClearColor(0x171922,1);hud.update(camera,'','',false);resize();
 }
+async function enterMarker() {
+  if (!ready() || !cameraAvailable || markerActive || session || xrBusy || cameraActive || cameraBusy || liveRoom.state === 'connecting') return;
+  if (!$('marker-size').reportValidity()) return;
+  stop();activeSource = resolvePlaybackSource(playbackChoice, selectedTake, {watchingLAN: watchingLAN()});updateTrackTitle();
+  const request = ++markerRequest;
+  markerActive = true;markerBusy = true;markerReturnFocus = document.activeElement;
+  controls.enabled = false;stage.visible = false;motionPreview.show(vrm, false);
+  camera.position.set(0,0,0);camera.quaternion.identity();camera.fov = 42;
+  renderer.setClearColor(0,0);
+  $('marker-overlay').hidden = false;$('marker-stage-slot').append($('stage'));
+  $('app').inert = true;document.body.classList.add('marker-open');
+  $('marker-exit').focus();updateButtons();resize();
+  try {
+    const started = await markerAR.start({markerSize: Number($('marker-size').value) / 100});
+    if (request !== markerRequest) return;
+    markerBusy = false;
+    if (!started) {endMarker();return;}
+    resize();
+  } catch(error) {
+    if (request !== markerRequest) return;
+    endMarker(error.name === 'NotAllowedError' ? 'カメラが許可されていません。Safariのカメラ権限を確認して再度開いてください。'
+      : 'マーカーARを開始できません。HTTPSで開き、カメラを使う他のアプリを閉じて再度お試しください。');
+  } finally {if (request === markerRequest) updateButtons();}
+}
+function endMarker(message = 'マーカーARを終了しました。選択したモーションはページでも再確認できます。') {
+  if (!markerActive) return;
+  ++markerRequest;markerActive = false;markerBusy = false;
+  markerAR.stop({notify: false});stop(false);
+  $('marker-overlay').hidden = true;viewerHome.after($('stage'));
+  $('app').inert = false;document.body.classList.remove('marker-open');
+  camera.fov = 42;camera.position.set(.4,1.45,4.6);controls.target.set(0,1.15,-.5);
+  restorePreview();controls.update();updateButtons();status(message);
+  markerReturnFocus?.focus?.();markerReturnFocus = null;
+}
+$('marker-start').onclick = enterMarker;
+$('marker-exit').onclick = () => endMarker();
+$('marker-play').onclick = () => {if (markerActive && !markerBusy && markerAR.tracked) toggleStagePlayback();};
+$('marker-reset').onclick = () => {if (markerActive && !watchingLAN()) stop();};
+window.addEventListener('pagehide', () => endMarker());
+document.addEventListener('visibilitychange', () => {if (document.hidden) endMarker('画面を離れたためマーカーARを終了しました。再度開くと再開できます。');});
+$('marker-overlay').addEventListener('keydown', event => {
+  if (event.key === 'Escape') {event.preventDefault();endMarker();}
+});
+audio.addEventListener('pause', () => {
+  if (audio.paused && !audio.ended && playing && activeSource === 'demo' && !musicAudition) {
+    stop(false);status('音声が中断されたため一時停止しました。再生ボタンで再開できます。');
+  }
+});
 async function select(event) {
   if(!session || !ready() || !xrInputReady)return;
   if(sessionMode==='live' && sessionInputMode==='touch')return;
@@ -543,7 +606,7 @@ for(let i=0;i<2;i++) {
   grip.add(marker);scene.add(grip);
 }
 async function enterXR(mode) {
-  if(!ready() || session || xrBusy || cameraActive || cameraBusy || liveRoom.state === 'connecting')return;
+  if(!ready() || session || xrBusy || markerActive || cameraActive || cameraBusy || liveRoom.state === 'connecting')return;
   if(mode === 'record' && watchingLAN())return;
   stop();xrBusy=true;xrInputReady=false;previewAfterXR=false;autoplayAfterXR=true;
   if (mode === 'record') {musicCapture.cancel();musicCapture.error=null;recorder.cancel();liveTracking=null;}
@@ -608,8 +671,9 @@ async function enterXR(mode) {
     status(inputMode==='touch'?'ARを開始できません。ARCore対応Android、Google Play開発者サービス（AR）、Chrome、カメラ権限を確認してください。3Dプレビューとカメラ収録も利用できます。':'XRを開始できません。PICOブラウザ・HTTPS・権限を確認してください。');console.error(error);
   } finally {xrBusy=false;updateButtons();}
 }
-$('ar').onclick = () => enterXR('live');
-$('take-ar').onclick = () => {choosePlayback('take');enterXR('live');};
+function enterAR() {return arViewMode({arSupported, cameraAvailable}) === 'marker' ? enterMarker() : enterXR('live');}
+$('ar').onclick = enterAR;
+$('take-ar').onclick = () => {choosePlayback('take');enterAR();};
 $('record-xr').onclick = () => enterXR('record');
 $('exit-xr').onclick = () => {finishRecording();endXR();};
 $('xr-input-mode').onchange=()=>{updateButtons();updateXRLabels();};
@@ -633,7 +697,8 @@ renderer.xr.addEventListener('sessionend', () => {
 $('xr-diagnostics').onclick = () => {
   const data = {timestamp: new Date().toISOString(), userAgent: navigator.userAgent,
     secureContext: isSecureContext, arSupported, vrSupported, inputMode:sessionInputMode, wall: walls.diagnostics(), tracking: trackingReport,
-    camera:{available:cameraAvailable,active:cameraActive,quality:cameraTracking?.quality ?? null,bodyCount:cameraTracking?.bodyCount ?? 0}};
+    camera:{available:cameraAvailable,active:cameraActive,quality:cameraTracking?.quality ?? null,bodyCount:cameraTracking?.bodyCount ?? 0},
+    marker:{active:markerActive,tracked:markerAR.tracked,size:Number($('marker-size').value) / 100}};
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
   const link = document.createElement('a');link.href=url;link.download='vli-ar-diagnostics.json';link.click();
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
@@ -646,7 +711,7 @@ async function detectXR() {
 }
 function updateXRLabels() {
   const input=xrInputMode($('xr-input-mode').value,vrSupported);
-  $('ar').textContent=arSupported?(playbackChoice==='take' && !watchingLAN()?'選択モーションをARで確認 ↗':input==='touch'?'スマホARでステージを開く ↗':'ARでステージを開く ↗'):'この環境はAR非対応';
+  $('ar').textContent=arSupported?(playbackChoice==='take' && !watchingLAN()?'選択モーションをARで確認 ↗':input==='touch'?'スマホARでステージを開く ↗':'ARでステージを開く ↗'):cameraAvailable?'マーカーARでステージを開く ↗':'ARにはHTTPSとカメラが必要';
   $('record-xr').textContent=vrSupported || (arSupported && input==='controller')?'HMDでモーションを収録':'HMD収録には対応ヘッドセットが必要';
 }
 
@@ -683,7 +748,7 @@ $('raw-download').onclick = () => {if(selectedTake?.format==='vli.motion-capture
 restoreTake().then(async data => {
   if(!data || haveUserTake || motionLoad.pending)return;
   const clip=data.format==='vrma'?await parseVRMA(data.bytes):data.format==='vli.motion-capture'?validateMotionClip(data):validateDemoMotion(data);
-  if(haveUserTake || motionLoad.pending || cameraActive || cameraBusy || session || xrBusy)return;
+  if(haveUserTake || motionLoad.pending || cameraActive || cameraBusy || markerActive || session || xrBusy)return;
   selectedTake=clip;
   if (!playbackChoiceMade) {playbackChoice = 'take';activeSource = resolvePlaybackSource(playbackChoice, clip, {watchingLAN: watchingLAN()});}
   $('take-music').checked=!!clip.accompaniment;
@@ -697,15 +762,35 @@ restoreTake().then(async data => {
 
 function resize() {
   if(renderer.xr.isPresenting)return;
-  const el=$('viewport');camera.aspect=el.clientWidth/el.clientHeight;camera.updateProjectionMatrix();
-  renderer.setSize(el.clientWidth,el.clientHeight);
+  const el=$('viewport');
+  if (markerActive && markerAR.width && markerAR.height) {
+    const fit = fitCameraFrame(markerAR.width, markerAR.height, el.clientWidth, el.clientHeight);
+    if (!fit) return;
+    camera.aspect = markerAR.aspect;camera.fov = markerAR.cameraFov;camera.updateProjectionMatrix();
+    renderer.setSize(fit.width,fit.height);
+  } else {
+    if (!el.clientWidth || !el.clientHeight) return;
+    camera.aspect=el.clientWidth/el.clientHeight;camera.updateProjectionMatrix();
+    renderer.setSize(el.clientWidth,el.clientHeight);
+  }
 }
 new ResizeObserver(resize).observe($('viewport'));
+let markerDimensions = '';
 renderer.setAnimationLoop((time,frame) => {
   const delta=Math.min(clock.getDelta(),.05);
   const now = performance.now();
   const viewingLAN = watchingLAN();
   const cameraFresh = cameraActive && !cameraBusy && now - cameraObservedAt < 1000;
+  if (markerActive && !markerBusy) {
+    const wasTracked = markerAR.tracked;
+    markerAR.update(now);
+    if (markerActive) {
+      const dimensions = `${markerAR.width}x${markerAR.height}`;
+      if (dimensions !== markerDimensions) {markerDimensions = dimensions;resize();}
+      stage.visible = markerAR.tracked && placeMarkerStage(stage, markerAR.pose, Number($('width').value));
+      if (!stage.visible && (playing || wasTracked)) stop(false);
+    }
+  }
   if(pendingPlacement && xrInputReady && renderer.xr.isPresenting && session?.visibilityState === 'visible') {
     const viewer = frame?.getViewerPose(renderer.xr.getReferenceSpace());
     if (viewer && !viewer.emulatedPosition) {motionPreview.place(renderer.xr.getCamera(), referenceSpaceType.includes('floor'));pendingPlacement=false;}
@@ -748,6 +833,8 @@ renderer.setAnimationLoop((time,frame) => {
         if (observation) {sample = observation.sample; initialHeadHeight = observation.initialHeadHeight; referenceSpace = observation.referenceSpace;}
       } else if (liveDevice !== 'desktop' && sessionMode === 'live' && xrInputReady && walls.placed && walls.report.tracking && frame) {
         sample = sampleAudiencePose(frame, renderer.xr.getReferenceSpace(), stage, {device:liveDevice});
+      } else if (liveDevice !== 'desktop' && markerActive && !markerBusy) {
+        sample = markerAudiencePose(camera, stage, markerAR.tracked && stage.visible);
       }
     }
     sharedHead = !!sample?.head;
@@ -756,7 +843,9 @@ renderer.setAnimationLoop((time,frame) => {
   const remotePerformance = viewingLAN ? livePerformer.sample(now) : null;
   livePresence.update(now);
   livePresence.room.visible = liveRoom.connected && !cameraActive && sessionMode !== 'record' &&
+    (!markerActive || (!markerBusy && markerAR.tracked && stage.visible)) &&
     (!session || (xrInputReady && !!walls.placed && !!walls.report.tracking && session.visibilityState === 'visible'));
+  if (musicAudition && playing && !captureAudio.ready) {stop();$('record-status').textContent='音声が中断されました。試聴ボタンから再開してください。';status($('record-status').textContent);}
   if(musicAudition && playing && captureAudio.time>=captureAudio.duration){playing=false;finished=true;$('record-status').textContent='試聴が終了しました。';}
   if(activeSource==='take' && playing && takeWithMusic() && !captureAudio.ready) {
     stop(false);status('音声が中断されたため一時停止しました。再生操作でモーションと曲を再開できます。');
@@ -774,12 +863,12 @@ renderer.setAnimationLoop((time,frame) => {
   const state=viewingLAN?{label:remotePerformance?'LAN LIVE':'配信・追跡待ち',curtain:0}:demoActive?cue(finished?DURATION:t):{label:cameraActive?'CAMERA / 推定':sessionMode==='record'?'LIVE TRACKING':activeSource==='take'?'MOTION PREVIEW':'STANDBY',curtain:0};
   curtain.visible=state.curtain>.001;curtain.scale.y=Math.max(.001,state.curtain);curtain.position.y=2.5-1.25*state.curtain;
   if(vrm && demoVRMA) {
-    const previewing = !viewingLAN && (cameraActive || sessionMode === 'record' || (!session && activeSource === 'take'));
+    const previewing = !viewingLAN && (cameraActive || sessionMode === 'record' || (!session && !markerActive && activeSource === 'take'));
     motionPreview.show(vrm, previewing);
     vrm.scene.visible = viewingLAN ? !!remotePerformance : cameraActive ? cameraFresh && !!cameraTracking?.sample?.head : sessionMode !== 'record' || (xrInputReady && !pendingPlacement && !!liveTracking?.sample?.head);
     if (sessionMode === 'record' && (!xrInputReady || pendingPlacement)) motionPreview.room.visible = false;
     if (previewing) stage.visible = false;
-    else if (!session) stage.visible = true;
+    else if (!session && !markerActive) stage.visible = true;
     if(viewingLAN) {
       if(remotePerformance)applyMotionSampleToVRM(vrm,remotePerformance.sample,remotePerformance);
     } else if(cameraActive) {
@@ -793,6 +882,15 @@ renderer.setAnimationLoop((time,frame) => {
     vrm.update(delta);
   }
   if(time-lastUI>100) {
+    if (markerActive) {
+      const tracked = !markerBusy && markerAR.tracked && stage.visible;
+      $('marker-play').disabled = !tracked || viewingLAN;
+      $('marker-reset').disabled = viewingLAN || markerBusy;
+      $('marker-play').textContent = viewingLAN ? 'LANライブを受信' : playing ? '一時停止' : activeSource === 'take' ? 'モーションを再生' : 'ライブを再生';
+      $('marker-status').textContent = markerBusy ? 'カメラを準備しています…' : !tracked ? '壁に貼ったマーカーの枠全体を映してください。見失うと一時停止します。'
+        : viewingLAN ? remotePerformance ? 'LANライブを表示中 · 同じマーカーで観客の位置も共有できます。' : 'マーカーを追跡中 · 出演者の配信を待っています。'
+        : `${activeSource === 'take' ? '選択したモーション' : 'NEON DOOR'} · ${formatTime(t)} / ${formatTime(duration())} · ${playing ? '再生中' : '再生ボタンで開始・再開'}`;
+    }
     if (liveRoom.connected) {
       $('lan-status').textContent = `${liveRole === 'performer' ? '出演者として配信' : '観客として接続'} · ${liveRoom.peers.length + 1}人が参加中`;
       $('lan-tracking').textContent = !$('lan-share').checked ? '自分の姿勢の共有を停止しています。受信は続けます。'
@@ -847,7 +945,7 @@ renderer.setAnimationLoop((time,frame) => {
   }
   // Reposition head-locked HUD every frame; texture only changes with text.
   if(session) {hud.follow(renderer.xr.getCamera());hud.updatePointers(frame, session.inputSources, renderer.xr.getReferenceSpace());}
-  else controls.update();
+  else if (!markerActive) controls.update();
   renderer.render(scene,camera);
 });
 detectXR();

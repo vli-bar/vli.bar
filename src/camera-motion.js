@@ -8,7 +8,7 @@ const defaultAsset = path => new URL(path, globalThis.document?.baseURI ?? impor
  * Owns a camera stream and on-device Pose Landmarker. No microphone or video
  * recording is requested. MediaPipe, WASM and the model load only on start().
  * start() resolves true when ready, false when cancelled, and rejects failures.
- * onStatus receives {state,message,error?}; hidden/ended/error stop the camera
+ * onStatus receives {state,message,error?}; hidden/interrupted/ended/error stop the camera
  * before notifying the caller, which can then save its current motion take.
  */
 export class CameraMotion {
@@ -88,16 +88,25 @@ export class CameraMotion {
       run.stream = stream;
       const tracks = stream.getVideoTracks?.() ?? stream.getTracks?.() ?? [];
       if (!tracks.length || tracks.every(track => track.readyState === 'ended')) throw new Error('カメラ映像を取得できませんでした。');
-      for (const track of tracks) this._listen(run, track, 'ended', () => {
-        if (this._current(run)) this._terminate(run, 'ended', 'カメラが停止しました。取得済みの動きを保存できます。');
-      });
+      for (const track of tracks) {
+        this._listen(run, track, 'ended', () => {
+          if (this._current(run)) this._terminate(run, 'ended', 'カメラが停止しました。取得済みの動きを保存できます。');
+        });
+        // Safari can mute a still-live track when capture is interrupted or
+        // another tab takes the camera. Do not record frozen/black frames or
+        // resume midway through the accompaniment; the next button starts fresh.
+        this._listen(run, track, 'mute', () => {
+          if (this._current(run)) this._terminate(run, 'interrupted', 'カメラが中断されました。取得済みの動きを保存します。カメラをもう一度準備してください。');
+        });
+      }
       this._listen(run, this.video, 'error', () => {
         if (this._current(run)) this._terminate(run, 'error', 'カメラ映像を読み込めませんでした。');
       });
       this._listen(run, this.video, 'ended', () => {
         if (this._current(run)) this._terminate(run, 'ended', 'カメラ映像が終了しました。');
       });
-      this.video.muted = true; this.video.playsInline = true;
+      this.video.muted = true; this.video.defaultMuted = true; this.video.playsInline = true;
+      this.video.setAttribute?.('muted', '');
       this.video.setAttribute?.('playsinline', '');
       this.video.srcObject = stream;
       if (await this._wait(run, this.video.play()) === CANCELLED) return false;

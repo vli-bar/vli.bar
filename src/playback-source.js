@@ -9,8 +9,9 @@ export function resolvePlaybackSource(choice, take, { watchingLAN = false } = {}
 /** The same take can play in the page or a placed, tracked AR stage. */
 export function canResumeTake({ source, take, sessionMode = null, xrBusy = false,
   cameraOpen = false, inputReady = false, placed = false, tracking = false,
-  visibility = 'visible' } = {}) {
+  markerActive = false, markerTracked = false, visibility = 'visible' } = {}) {
   if (source !== 'take' || !take || xrBusy || cameraOpen) return false;
+  if (markerActive) return sessionMode === null && markerTracked && visibility === 'visible';
   return sessionMode === null || (sessionMode === 'live' && inputReady && placed && tracking && visibility === 'visible');
 }
 

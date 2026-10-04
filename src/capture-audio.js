@@ -31,7 +31,9 @@ export class CaptureAudio {
 
   get duration() { return this.buffer?.duration ?? 0; }
   get ready() { return !!this.buffer && this.context?.state === 'running'; }
-  get playing() { return this._source !== null && this.time < this.duration; }
+  // On Safari an interruption can retain a live source while its audio clock
+  // is suspended. It is not playing until a user gesture resumes the context.
+  get playing() { return this.context?.state === 'running' && this._source !== null && this.time < this.duration; }
   get time() {
     const elapsed = this._source ? Math.max(0, this.context.currentTime - this._startedAt) : 0;
     return clamp(this._position + elapsed, this.duration);

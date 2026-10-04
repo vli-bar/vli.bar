@@ -88,13 +88,16 @@ test('unknown user certificates are never overwritten by offline startup certifi
   assert.equal(await readFile(path.join(directory,'server.crt'),'utf8'),certificate);
 });
 
-test('production LAN serves local config/help with restrictive CSP and rejects public or other-localhost origins',async t=>{
+test('production LAN serves local config/help/marker with restrictive CSP and rejects public or other-localhost origins',async t=>{
   const root=await temp(t);
   const certificate=await ensureLanCertificate({directory:path.join(root,'certs'),hosts:['127.0.0.1']});
   const ca=await readFile(certificate.caPath),cert=await readFile(certificate.certPath),key=await readFile(certificate.keyPath);
   assert.throws(()=>createLanServer({host:'127.0.0.1',cert,key,publicOrigin:'https://vli.bar'}),/ローカルIP/);
   await mkdir(path.join(root,'dist','help'),{recursive:true});
   await writeFile(path.join(root,'dist','help','lan-offline.html'),'<h1>Venue instructions</h1>');
+  await mkdir(path.join(root,'dist','markers'),{recursive:true});
+  await writeFile(path.join(root,'dist','markers','index.html'),'<h1>Printable marker</h1><img src="./stage.svg">');
+  await writeFile(path.join(root,'dist','markers','stage.svg'),'<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>');
   const relay=createLanServer({host:'127.0.0.1',port:0,cert,key,distDir:path.join(root,'dist')});
   const address=await relay.listen();t.after(()=>relay.close());
   const url=`https://127.0.0.1:${address.port}`;
@@ -108,6 +111,12 @@ test('production LAN serves local config/help with restrictive CSP and rejects p
   assert.ok(csp.includes(`connect-src 'self' blob: ${url.replace('https:','wss:')}`));
   assert.ok(!csp.includes('vli.bar') && !csp.includes('https:;') && !csp.includes('*'));
   assert.match((await getHTTPS(url+'/help/',ca)).text,/Venue instructions/);
+  const markerPage=await getHTTPS(url+'/markers/index.html',ca);
+  assert.equal(markerPage.status,200);assert.match(markerPage.headers['content-type'],/^text\/html/);
+  assert.match(markerPage.text,/Printable marker/);
+  const marker=await getHTTPS(url+'/markers/stage.svg',ca);
+  assert.equal(marker.status,200);assert.equal(marker.headers['content-type'],'image/svg+xml');
+  assert.match(marker.text,/<svg/);assert.equal(marker.headers['content-security-policy'],csp);
   for(const origin of ['https://vli.bar','http://localhost:5173','https://localhost:5173','https://192.168.1.5:8443']) {
     const status=await new Promise(resolve=>{
       const socket=new WebSocket(url.replace('https:','wss:')+'/live',{ca,origin});
