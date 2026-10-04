@@ -23,11 +23,13 @@ await writeFile(new URL('index.html', dir), `<!doctype html>
 <p class="hint screen"><a href="LICENSE.txt">マーカー検出ライブラリ js-aruco2 のライセンス</a></p>
 <script src="print.js" defer></script></body></html>\n`);
 await writeFile(new URL('print.js', dir), "document.getElementById('print-marker').addEventListener('click', () => window.print());\n");
-// Keep the upstream notice byte-for-byte, including its third-party notices.
+// Keep the complete upstream text, including its third-party notices, using
+// the repository's LF line endings and no trailing whitespace.
 // The package's main LICENSE lacks the 2012 header shared by posit1.js/svd.js;
 // retain that complete notice too, even if bundler minification drops comments.
 const upstream = await readFile(new URL('../node_modules/js-aruco2/LICENSE.txt', import.meta.url));
 const positSource = await readFile(new URL('../node_modules/js-aruco2/src/posit1.js', import.meta.url), 'utf8');
 const additional = positSource.slice(positSource.indexOf('/*') + 2, positSource.indexOf('*/')).trim();
-await writeFile(new URL('LICENSE.txt', dir), Buffer.concat([upstream, Buffer.from(`\n\nAdditional notice from bundled js-aruco2/src/posit1.js and src/svd.js\n==================================================================\n${additional}\n`)]));
+const notice = `${upstream.toString('utf8')}\n\nAdditional notice from bundled js-aruco2/src/posit1.js and src/svd.js\n==================================================================\n${additional}\n`;
+await writeFile(new URL('LICENSE.txt', dir), notice.replace(/\r\n?/g, '\n').replace(/[\t ]+$/gm, ''));
 console.log('Generated public/markers/stage.svg, index.html, print.js and LICENSE.txt (black square 150 mm).');
