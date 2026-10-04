@@ -32,6 +32,9 @@ test('touch AR requests optional geometry even when starting with distance place
     assert.ok(init.optionalFeatures.includes('local-floor'));
     assert.ok(init.optionalFeatures.includes('hit-test'));
     assert.ok(init.optionalFeatures.includes('plane-detection'));
+    assert.ok(init.optionalFeatures.includes('depth-sensing'));
+    assert.ok(!init.requiredFeatures.includes('depth-sensing'));
+    assert.deepEqual(init.depthSensing, {usagePreference:['cpu-optimized'], dataFormatPreference:['float32','luminance-alpha'], matchDepthView:true});
     assert.ok(!init.requiredFeatures.includes('hit-test'));
     assert.ok(!init.requiredFeatures.includes('plane-detection'));
   }
@@ -40,7 +43,7 @@ test('touch AR requests optional geometry even when starting with distance place
 test('controller AR preserves HMD options and does not require DOM overlay', () => {
   const {type, init} = xrSessionOptions({mode: 'live', vrSupported: true, overlayRoot: {}});
   assert.equal(type, 'immersive-ar');
-  assert.deepEqual(init.optionalFeatures, ['local-floor', 'plane-detection', 'hit-test']);
+  assert.deepEqual(init.optionalFeatures, ['local-floor', 'plane-detection', 'hit-test', 'depth-sensing']);
   assert.equal(init.requiredFeatures, undefined);
   assert.equal(init.domOverlay, undefined);
   for (const placementMode of ['manual', 'distance']) {
@@ -68,8 +71,10 @@ test('new session options do not inherit mutations or DOM roots from a prior ses
   const oldOptions = xrSessionOptions({mode: 'live', vrSupported: false, overlayRoot: oldRoot});
   oldOptions.init.optionalFeatures.length = 0;
   oldOptions.init.requiredFeatures.push('unrelated-feature');
+  oldOptions.init.depthSensing.usagePreference.push('gpu-optimized');
   const nextOptions = xrSessionOptions({mode: 'live', vrSupported: false, overlayRoot: nextRoot});
   assert.equal(nextOptions.init.domOverlay.root, nextRoot);
+  assert.deepEqual(nextOptions.init.depthSensing.usagePreference,['cpu-optimized']);
   assert.ok(nextOptions.init.optionalFeatures.includes('hit-test'));
   assert.deepEqual(nextOptions.init.requiredFeatures, ['dom-overlay']);
   assert.equal(xrSessionOptions({mode: 'record', vrSupported: true}).init.domOverlay, undefined);

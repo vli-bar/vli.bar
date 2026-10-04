@@ -44,7 +44,7 @@
           <p><strong>コントローラーで3点を指定</strong><br>舞台を置く範囲の左下・右下・左上で、コントローラーの緑の点を壁の数cm手前に合わせ、順にトリガーを押します。幅は実測し、高さは比率を保って決まります。</p>
           <p>スマホは「置き直す」で再配置できます。HMDはサイドグリップで再配置し、自動検出中に押すと3点指定へ切り替わります。</p>
         </div>
-        <p class="note">自動検出は、端末のブラウザが平面情報またはヒットテストを公開している場合に使えます。APIが提供されない環境では、部屋や壁の自動解析はできません。</p>
+        <p class="note" id="wall-capability" role="status">壁の自動検出はマーカー不要です。ブラウザが提供する平面・交点・奥行き情報を使います。端末の対応状況を確認しています…</p>
         <p class="note" id="device-support" role="status">iPhoneはSafariでマーカーAR・カメラ収録・3Dプレビューを利用できます。Androidの壁検出ARにはARCore対応機種・Chrome・Google Play開発者サービス（AR）が必要です。カメラとARはHTTPSで開いてください。</p>
       </div>
       <div class="fields">
@@ -131,7 +131,7 @@
   <div class="xr-reticle" aria-hidden="true">＋</div>
   <div class="xr-touch-bottom">
     <p id="xr-touch-status" role="status">画面中央を壁に向けてください。</p>
-    <div class="xr-touch-actions"><button id="xr-touch-place">ここに配置</button><button id="xr-touch-play" disabled>ライブを再生</button><button id="xr-touch-reset" class="secondary">置き直す</button><button id="xr-touch-mode" class="secondary">距離指定へ</button></div>
+    <div class="xr-touch-actions"><button id="xr-touch-place" disabled>ここに配置</button><button id="xr-touch-play" disabled>ライブを再生</button><button id="xr-touch-reset" class="secondary">置き直す</button><button id="xr-touch-mode" class="secondary">距離指定へ</button><button id="xr-touch-scan" class="secondary" hidden>部屋をスキャン</button></div>
     <label class="volume">音量<input id="xr-touch-volume" type="range" min="0" max="1" step="0.05" value="0.6"></label>
   </div>
 </div>

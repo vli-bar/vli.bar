@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Markerless wall smoke test — synthetic XR frames</title>
+  <style>
+    body{max-width:1100px;margin:24px auto;padding:0 16px;background:#111827;color:#eef2ff;font:16px/1.5 system-ui}
+    button{font:inherit;padding:10px;margin:4px;background:#91efcf;color:#10251c;border:0;border-radius:6px}
+    button:disabled{opacity:.45}#viewport{max-width:800px;aspect-ratio:8/5;margin:16px 0;background:#202c40}
+    canvas{display:block;width:100%;height:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#182338;padding:16px}
+    #assertions[data-state="passed"]{color:#c6ff75}#assertions[data-state="failed"]{color:#ffaaa0}
+  </style>
+</head>
+<body>
+  <h1>Markerless wall smoke test</h1>
+  <p>実機・実カメラ・WebXRセッションは使用しません。合成XRフレームを本体のWallPlacementへ渡し、実際のThree.js描画と配置・深度推定・部屋スキャン操作を検証します。緑は候補枠、橙は配置済みステージです。</p>
+  <div aria-label="Synthetic scenarios">
+    <button id="native-wall">Native wall</button>
+    <button id="depth-wall">Depth wall only</button>
+    <button id="floor-only">Floor only</button>
+    <button id="no-apis">No geometry APIs</button>
+    <button id="furniture">Known furniture</button>
+    <button id="scan-waiting">Room scan waiting</button>
+    <button id="tracking-lost">Lost tracking</button>
+  </div>
+  <div aria-label="Placement actions">
+    <button id="confirm">Confirm placement</button>
+    <button id="reset">Reset placement</button>
+    <button id="room-scan">Request room scan</button>
+  </div>
+  <p id="status" role="status">Starting synthetic test…</p>
+  <div id="viewport" aria-label="Synthetic wall scene"></div>
+  <h2>Assertions</h2><pre id="assertions">Waiting</pre>
+  <h2>Diagnostics</h2><pre id="result">Waiting</pre>
+  <script type="module" src="./wall-smoke.js"></script>
+</body>
+</html>

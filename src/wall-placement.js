@@ -1,10 +1,14 @@
 import * as THREE from 'three';
 import { intersectWallPlane, buildWallCalibration } from './wall-geometry.js';
+import { detectDepthWall } from './depth-wall.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const VERTICAL_LIMIT = Math.sin(20 * Math.PI / 180);
 const pointNames = ['左下', '右下', '左上'];
 const matrixOf = pose => new THREE.Matrix4().fromArray(pose.transform.matrix);
+const validPose = pose => pose && !pose.emulatedPosition && pose.transform?.matrix?.length === 16 &&
+  Array.from(pose.transform.matrix).every(Number.isFinite) && Math.abs(matrixOf(pose).determinant()) > 1e-8;
+const NON_WALL_LABELS = new Set(['floor', 'ceiling', 'table', 'desk', 'couch', 'chair', 'bed', 'screen', 'storage', 'global-mesh', 'global mesh']);
 const cancelSource = source => {try {source?.cancel();} catch { /* Session may already be inactive. */ }};
 const resolveMode = (mode, inputMode) => inputMode === 'touch' && mode === 'manual' ? 'distance' : mode;
 
@@ -37,9 +41,12 @@ export class WallPlacement {
     this.mode = resolveMode(mode, this.inputMode); this.width = width; this.distance = distance;
     this.points = []; this.candidate = null; this.placed = null; this.message = '';
     this.roomAttempted = false; this.viewer = null; this.lastUpdate = -Infinity;
+    this.depthStable = null;
+    const roomAvailable = typeof session.initiateRoomCapture === 'function' && (!session.enabledFeatures || Array.from(session.enabledFeatures).includes('plane-detection'));
     this.report = {state: 'active', mode: this.mode, inputMode: this.inputMode, enabledFeatures: session.enabledFeatures ? Array.from(session.enabledFeatures) : null,
       planeAPI: this.mode === 'auto' ? 'waiting' : 'not-requested', planes: 0, verticalPlanes: 0,
-      hitTest: this.mode === 'auto' ? 'waiting' : 'disabled', roomCapture: typeof session.initiateRoomCapture === 'function' ? 'available' : 'unavailable'};
+      hitTest: this.mode === 'auto' ? 'waiting' : 'disabled', depth: this.mode === 'auto' ? 'waiting' : 'disabled',
+      roomCapture: roomAvailable ? 'available' : 'unavailable'};
     this.visuals.visible = true;
     this.preview.visible = false; this.dots.forEach(dot => { dot.visible = false; });
     // Feature requests can settle after XR has ended. Dispose late results too.
@@ -66,6 +73,7 @@ export class WallPlacement {
     ++this.hitTestVersion;
     cancelSource(this.hitSource); this.hitSource = null;
     this.session = null; this.candidate = null; this.placed = null;
+    this.depthStable = null;
     this.visuals.visible = false;
     for (const {line} of this.planeViews.values()) {this.visuals.remove(line); line.geometry.dispose();}
     this.planeViews.clear();
@@ -76,6 +84,8 @@ export class WallPlacement {
     const previousMode = this.mode;
     this.mode = resolveMode(mode ?? (switchToManual ? 'manual' : this.mode), this.inputMode);
     this.points = []; this.placed = null; this.candidate = null; this.message = '';
+    this.depthStable = null; delete this.report.depthMetrics; delete this.report.depthReason;
+    this.report.depth = this.mode === 'auto' ? 'waiting' : 'disabled';
     this.lastUpdate = -Infinity; this.report.tracking = false;
     this.report.mode = this.mode;
     delete this.report.placementSource;
@@ -106,9 +116,9 @@ export class WallPlacement {
     for (const {line} of this.planeViews.values()) line.visible = false;
     this.report.tracking = false;
     this.dots.forEach(dot => {dot.visible = false;});
-    if (this.session.visibilityState !== 'visible') return;
+    if (this.session.visibilityState !== 'visible') {this.depthStable = null; return;}
     const pose = frame.getViewerPose(this.referenceSpace);
-    if (!pose || pose.emulatedPosition) return;
+    if (!validPose(pose)) {this.depthStable = null; return;}
     this.report.tracking = true;
     if (!this.placed) this.points.forEach((point, i) => {this.dots[i].visible = true;});
     const view = matrixOf(pose);
@@ -122,9 +132,12 @@ export class WallPlacement {
       this.candidate = {point: this.viewer.clone().addScaledVector(direction, this.distance), normal: direction.clone().negate(), source: 'distance'};
     } else {
       this.scanPlanes(frame, {origin: this.viewer, direction});
-      if (!this.candidate && this.hitSource) this.scanHits(frame);
+      if (!this.candidate && !this.report.blockedBySurface && this.hitSource) this.scanHits(frame);
+      if (!this.candidate && !this.report.blockedBySurface) this.scanDepth(frame, pose, now);
+      else {this.depthStable = null; this.report.depth = 'not-needed'; delete this.report.depthMetrics; delete this.report.depthReason;}
     }
     if (this.candidate) {
+      this.message = '';
       this.candidate.quaternion = this.orientation(this.candidate.normal);
       this.preview.position.copy(this.candidate.point).addScaledVector(this.candidate.normal, .015);
       this.preview.quaternion.copy(this.candidate.quaternion);
@@ -138,16 +151,25 @@ export class WallPlacement {
     try {planes = frame.detectedPlanes; this.report.planeAPI = planes ? 'available' : 'unavailable';}
     catch (error) {this.report.planeAPI = error.name;}
     this.report.planes = planes?.size || 0; this.report.verticalPlanes = 0;
+    this.report.blockedBySurface = false;
+    let obstacleDistance = Infinity;
     for (const [plane, {line}] of this.planeViews) {
       if (!planes?.has(plane)) {this.visuals.remove(line); line.geometry.dispose(); this.planeViews.delete(plane);}
     }
     if (!planes) return;
     for (const plane of planes) {
-      const pose = frame.getPose(plane.planeSpace, this.referenceSpace);
-      if (!pose || pose.emulatedPosition) continue;
+      let pose;
+      try {pose = frame.getPose(plane.planeSpace, this.referenceSpace);} catch {continue;}
+      if (!validPose(pose) || !Array.isArray(plane.polygon) || plane.polygon.length < 3 ||
+        !plane.polygon.every(p => p && [p.x, p.y, p.z].every(Number.isFinite))) continue;
       const matrix = matrixOf(pose);
       const normal = new THREE.Vector3(0, 1, 0).transformDirection(matrix);
       if (plane.orientation === 'horizontal' || Math.abs(normal.dot(UP)) > VERTICAL_LIMIT) continue;
+      const hit = intersectWallPlane(ray, {matrix, polygon: plane.polygon, orientation: plane.orientation});
+      if (NON_WALL_LABELS.has(plane.semanticLabel?.toLowerCase())) {
+        if (hit && hit.distance >= .25) obstacleDistance = Math.min(obstacleDistance, hit.distance);
+        continue;
+      }
       this.report.verticalPlanes++;
       let visual = this.planeViews.get(plane);
       if (!visual) {
@@ -161,10 +183,12 @@ export class WallPlacement {
         visual.changed = plane.lastChangedTime; visual.count = plane.polygon.length;
       }
       visual.line.matrix.copy(matrix); visual.line.visible = true;
-      const hit = intersectWallPlane(ray, {matrix, polygon: plane.polygon, orientation: plane.orientation});
       if (hit && hit.distance >= .25 && hit.distance <= 8 && (!this.candidate || hit.distance < this.candidate.distance)) {
         this.candidate = {...hit, source: 'plane-detection'};
       }
+    }
+    if (obstacleDistance < (this.candidate?.distance ?? Infinity)) {
+      this.candidate = null; this.report.blockedBySurface = true;
     }
   }
 
@@ -172,7 +196,7 @@ export class WallPlacement {
     try {
       for (const result of frame.getHitTestResults(this.hitSource)) {
         const pose = result.getPose(this.referenceSpace);
-        if (!pose || pose.emulatedPosition) continue;
+        if (!validPose(pose)) continue;
         const matrix = matrixOf(pose);
         const normal = new THREE.Vector3(0, 1, 0).transformDirection(matrix);
         if (Math.abs(normal.dot(UP)) > VERTICAL_LIMIT) continue;
@@ -184,6 +208,24 @@ export class WallPlacement {
         if (!this.candidate || distance < this.candidate.distance) this.candidate = {point, normal, distance, source: 'hit-test'};
       }
     } catch (error) {this.report.hitTest = error.name;}
+  }
+
+  scanDepth(frame, pose, now) {
+    const result = detectDepthWall(frame, this.referenceSpace, pose);
+    this.report.depth = result.state; this.report.depthReason = result.reason; this.report.depthMetrics = {...result.metrics};
+    const candidate = result.candidate;
+    if (!candidate) {this.depthStable = null; return;}
+    const stable = this.depthStable;
+    // A single noisy depth image must not become a placement. Compare to the
+    // original plane, so slowly drifting estimates cannot accumulate confidence.
+    if (!stable || now - stable.last > 250 || now < stable.last ||
+      stable.normal.dot(candidate.normal) < Math.cos(8 * Math.PI / 180) ||
+      Math.abs(candidate.point.clone().sub(stable.point).dot(stable.normal)) > .08 ||
+      stable.point.distanceTo(candidate.point) > .3) {
+      this.depthStable = {point:candidate.point.clone(), normal:candidate.normal.clone(), since:now, last:now, frames:1};
+    } else {stable.last = now; stable.frames++;}
+    if (now - this.depthStable.since >= 350 && this.depthStable.frames >= 3) this.candidate = candidate;
+    else this.report.depth = 'stabilizing';
   }
 
   confirm(frame, inputSource, now = performance.now()) {
@@ -221,7 +263,7 @@ export class WallPlacement {
 
   async requestRoomCapture() {
     const session = this.session;
-    if (this.mode !== 'auto' || this.roomAttempted || typeof session?.initiateRoomCapture !== 'function') {
+    if (!this.canRequestRoomCapture()) {
       this.message = this.inputMode === 'touch'
         ? (this.mode === 'distance' ? 'スマホを壁に向け、配置ボタンを押してください' : '壁が見つからない場合は距離指定へ切り替えてください')
         : '壁が見つからない場合はグリップで3点指定へ';
@@ -242,6 +284,11 @@ export class WallPlacement {
     }
   }
 
+  canRequestRoomCapture() {
+    return !!this.session && this.session.visibilityState === 'visible' && this.mode === 'auto' &&
+      !this.placed && !this.roomAttempted && this.report.roomCapture === 'available';
+  }
+
   guidance() {
     const touch = this.inputMode === 'touch';
     if (!this.report.tracking) return ['位置を追跡中', '周囲を見て追跡の復帰を待ってください'];
@@ -250,9 +297,12 @@ export class WallPlacement {
     if (this.mode === 'manual') return [`壁の3点指定 ${this.points.length + 1}/3 · ${pointNames[this.points.length]}`, '緑の点を指定位置に合わせてトリガー'];
     if (this.candidate) return [this.mode === 'distance' ? '指定距離で配置（壁検出なし）' : '壁の候補を検出', touch ? '画面中央の枠を確認し、配置ボタンを押してください' : '枠の位置でトリガー → 配置 · もう一度で開演'];
     if (this.mode === 'distance') return ['配置位置を調整中（壁検出なし）', touch ? 'スマホを正面に向け、画面中央の枠を確認してください' : '壁を正面に見て、配置する枠を確認してください'];
-    if (this.report.planeAPI !== 'available' && !['available', 'waiting'].includes(this.report.hitTest)) return ['壁情報を取得できません', touch ? '距離指定へ切り替えて配置してください' : 'グリップでコントローラーによる3点指定へ'];
+    if (this.report.blockedBySurface) return ['壁の前に物があります', '家具を避け、壁が見える位置にゆっくり向きを変えてください'];
+    if (this.report.depth === 'stabilizing') return ['壁の奥行きを確認中', '壁の中心に向けたまま、少し静止してください'];
+    if (['sparse', 'not-planar', 'not-vertical', 'invalid-depth', 'tracking'].includes(this.report.depth)) return ['奥行きから壁を探しています', '床や家具を避け、壁を広く映しながらゆっくり見回してください'];
+    if (this.report.planeAPI !== 'available' && !['available', 'waiting'].includes(this.report.hitTest) && this.report.depth === 'unavailable') return ['壁情報を取得できません', touch ? '距離指定へ切り替えて配置してください' : 'グリップでコントローラーによる3点指定へ'];
     const search = this.report.roomCapture === 'available'
-      ? (touch ? '画面中央を壁に向ける · 配置ボタンで部屋スキャン' : '壁中心を見る · トリガーで部屋スキャン')
+      ? (touch ? '画面中央を壁に向ける · 「部屋をスキャン」で端末の案内を開く' : '壁中心を見る · トリガーで部屋スキャン')
       : (touch ? '画面中央を壁に向ける · 見つからない場合は距離指定へ' : '壁中心を見る · グリップで3点指定へ');
     return [`壁を探しています · 垂直面 ${this.report.verticalPlanes}`, search];
   }

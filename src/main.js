@@ -680,6 +680,7 @@ $('xr-input-mode').onchange=()=>{updateButtons();updateXRLabels();};
 // Do not let a DOM button tap also generate WebXR select on the stage.
 $('xr-touch-overlay').addEventListener('beforexrselect',event=>event.preventDefault());
 $('xr-touch-place').onclick=()=>{if(sessionMode==='live' && xrInputReady && !walls.placed)pendingTouchPlacement=true;};
+$('xr-touch-scan').onclick=()=>{if(sessionMode==='live' && xrInputReady && walls.canRequestRoomCapture())walls.requestRoomCapture();};
 $('xr-touch-play').onclick=()=>{if(sessionMode==='live' && walls.placed && walls.report.tracking)toggleStagePlayback();};
 $('xr-touch-reset').onclick=()=>{
   if(sessionMode!=='live')return;
@@ -713,6 +714,9 @@ function updateXRLabels() {
   const input=xrInputMode($('xr-input-mode').value,vrSupported);
   $('ar').textContent=arSupported?(playbackChoice==='take' && !watchingLAN()?'選択モーションをARで確認 ↗':input==='touch'?'スマホARでステージを開く ↗':'ARでステージを開く ↗'):cameraAvailable?'マーカーARでステージを開く ↗':'ARにはHTTPSとカメラが必要';
   $('record-xr').textContent=vrSupported || (arSupported && input==='controller')?'HMDでモーションを収録':'HMD収録には対応ヘッドセットが必要';
+  $('wall-capability').textContent=arSupported
+    ? 'マーカー不要。ARを開始すると、平面・交点・奥行き情報から壁を探します。取得できた情報と検出状況はAR中に表示します。'
+    : 'このブラウザではWebXR ARを利用できないため、壁の自動検出は開始できません。下のマーカーARは印刷マーカーを使う別の方式です。AndroidではARCore対応端末とChromeを確認してください。';
 }
 
 $('motion-file').onchange = async event => {
@@ -934,12 +938,17 @@ renderer.setAnimationLoop((time,frame) => {
       if(sessionInputMode==='touch') {
         $('xr-touch-status').textContent=viewingLAN && walls.placed?`${liveTitle} · 顔アバターの位置はスマホ位置が目安です。`:playing?`${formatTime(t)} / ${formatTime(duration())} · ${takeSelected?'モーション':'ライブ'}再生中`:`${liveTitle}。${liveDetail}`;
         $('xr-touch-place').disabled=!!walls.placed || !walls.candidate || !walls.report.tracking;
+        $('xr-touch-scan').hidden=walls.mode!=='auto' || walls.report.roomCapture==='unavailable' || !!walls.placed;
+        $('xr-touch-scan').disabled=!walls.canRequestRoomCapture();
+        $('xr-touch-scan').textContent=walls.report.roomCapture==='requested'?'部屋をスキャン中…':walls.roomAttempted?'部屋スキャン要求済み':'部屋をスキャン';
         $('xr-touch-play').disabled=viewingLAN || !walls.placed || !walls.report.tracking;
         $('xr-touch-play').textContent=viewingLAN?'LANライブを受信':playing?'一時停止':takeSelected?'モーションを再生':'ライブを再生';
         $('xr-touch-mode').textContent=walls.mode==='auto'?'距離指定へ':'壁の自動検出へ';
       }
       const report = walls.diagnostics();
-      $('wall-status').textContent = `${title}。${detail}（平面 ${report.planes} / 垂直面 ${report.verticalPlanes}）`;
+      const source=report.placementSource ?? walls.candidate?.source;
+      const sourceLabel={'plane-detection':'平面検出','hit-test':'垂直面の交点','depth-sensing':'奥行きからの壁推定',distance:'距離指定',manual:'3点指定'}[source];
+      $('wall-status').textContent = `${title}。${detail}（平面 ${report.planes} / 垂直面 ${report.verticalPlanes}${sourceLabel?` / ${sourceLabel}`:''}）`;
     }
     lastUI=time;
   }

@@ -26,7 +26,7 @@ function frame({ planes = [], hits = [], viewer = pose() } = {}) {
 }
 function fixture({ mode = 'auto', width = 2.4, distance = 2, inputMode = 'controller', session: extra = {} } = {}) {
   const scene = new THREE.Scene();
-  const session = { visibilityState: 'visible', enabledFeatures: [], ...extra };
+  const session = { visibilityState: 'visible', enabledFeatures: ['plane-detection'], ...extra };
   const placement = new WallPlacement(scene);
   const referenceSpace = { type: 'local' };
   placement.start(session, referenceSpace, { mode, width, distance, inputMode });
@@ -38,6 +38,122 @@ function deferred() {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
+
+function depthFrame(depth = 2) {
+  const viewer = pose();
+  viewer.views = [{transform:viewer.transform, projectionMatrix:new THREE.PerspectiveCamera(60, 1, .1, 20).projectionMatrix.toArray()}];
+  const xrFrame = frame({viewer});
+  delete xrFrame.detectedPlanes;
+  xrFrame.getDepthInformation = () => ({width:160, height:160, normDepthBufferFromNormView:{matrix:new THREE.Matrix4().toArray()},
+    getDepthInMeters:() => depth});
+  return xrFrame;
+}
+
+test('depth-only walls require stable measurements, reset on tracking loss, and preserve placement after confirmation', () => {
+  const {placement} = fixture({inputMode:'touch'}), xrFrame = depthFrame();
+  for (const time of [1000, 1100, 1200, 1300]) {
+    placement.update(xrFrame,time);
+    assert.equal(placement.candidate,null);
+    assert.equal(placement.diagnostics().depth,'stabilizing');
+    assert.equal(placement.confirm(xrFrame,null,time),null);
+  }
+  // No room API is present; an early tap must not stop subsequent detection.
+  placement.update(xrFrame,1400);
+  assert.equal(placement.candidate.source,'depth-sensing');
+  close(placement.candidate.point.z,-2);
+  placement.update(frame({viewer:null}),1410);
+  assert.equal(placement.candidate,null);
+  assert.equal(placement.confirm(xrFrame,null,1410),null);
+  placement.update(xrFrame,1500);
+  assert.equal(placement.candidate,null,'recovered tracking needs fresh stability');
+  for (const time of [1600,1700,1800,1900]) placement.update(xrFrame,time);
+  const result=placement.confirm(xrFrame,null,1900);
+  assert.equal(result.source,'depth-sensing');
+  close(result.position.z,-2);
+  placement.update(depthFrame(4),1950);
+  close(placement.placed.position.z,-2);
+  assert.equal(placement.diagnostics().placementSource,'depth-sensing');
+  placement.reset();
+  placement.update(xrFrame,2000);
+  assert.equal(placement.candidate,null,'repositioning discards prior confidence');
+});
+
+test('changing depth, missing depth and long gaps cannot become a stable detected wall', () => {
+  const {placement}=fixture();
+  for (let n=0;n<12;n++) {
+    placement.update(depthFrame(n%2?2:3),1000+n*100);
+    assert.equal(placement.candidate,null);
+  }
+  placement.update(depthFrame(0),2200);
+  assert.equal(placement.candidate,null);
+  assert.equal(placement.depthStable,null);
+  placement.update(depthFrame(2),2300);
+  placement.update(depthFrame(2),3000);
+  assert.equal(placement.candidate,null,'elapsed idle time does not count as stability');
+  placement.reset({mode:'distance'});
+  placement.update(depthFrame(2),3100);
+  assert.equal(placement.candidate.source,'distance');
+  assert.equal(placement.diagnostics().depth,'disabled');
+});
+
+test('native wall data takes priority without reading depth, while known furniture blocks fallback', async () => {
+  const {placement}=fixture({session:{requestReferenceSpace:async()=>({}),requestHitTestSource:async()=>({cancel(){}})}});
+  await setImmediate();
+  let depthCalls=0;
+  const wall=plane('wall',[0,1.6,-3]); wall.value.semanticLabel='wall';
+  const furniture=plane('desk',[0,1.6,-1]); furniture.value.semanticLabel='desk';
+  const xrFrame=frame({planes:[wall],hits:[pose([0,1.6,-1],verticalRotation)]});
+  xrFrame.getDepthInformation=()=>{depthCalls++;throw new Error('Not needed');};
+  placement.update(xrFrame,1000);
+  assert.equal(placement.candidate.source,'plane-detection');
+  close(placement.candidate.point.z,-3);
+  xrFrame.detectedPlanes.add(furniture.value);xrFrame.positions.set(furniture.value.planeSpace,furniture.pose);
+  placement.update(xrFrame,1100);
+  assert.equal(placement.candidate,null);
+  assert.equal(placement.diagnostics().blockedBySurface,true);
+  assert.match(placement.guidance()[0],/物/);
+  assert.equal(depthCalls,0,'fallback must not place on known furniture');
+  xrFrame.detectedPlanes.delete(furniture.value);
+  placement.update(xrFrame,1200);
+  assert.equal(placement.candidate.source,'plane-detection');
+  assert.equal(placement.diagnostics().blockedBySurface,false);
+});
+
+test('touch room scan is available without a wall candidate, checks granted features and runs only once', async () => {
+  let calls=0;
+  const pending=deferred();
+  const {placement}=fixture({inputMode:'touch',session:{initiateRoomCapture:()=>{calls++;return pending.promise;}}});
+  placement.update(frame(),1000);
+  assert.equal(placement.candidate,null);
+  assert.equal(placement.canRequestRoomCapture(),true,'scan action is independent of the disabled placement action');
+  const result=placement.requestRoomCapture();
+  assert.equal(calls,1);
+  assert.equal(placement.canRequestRoomCapture(),false);
+  await placement.requestRoomCapture();
+  pending.resolve();await result;
+  assert.equal(calls,1);
+  assert.equal(placement.diagnostics().roomCapture,'completed');
+  placement.reset();
+  assert.equal(placement.canRequestRoomCapture(),false);
+  const denied=fixture({session:{enabledFeatures:[],initiateRoomCapture:()=>{calls++;}}}).placement;
+  assert.equal(denied.canRequestRoomCapture(),false);
+  await denied.requestRoomCapture();
+  assert.equal(calls,1,'method presence is insufficient when plane-detection was declined');
+});
+
+test('malformed browser geometry cannot poison or crash the wall placement loop', async () => {
+  const {placement}=fixture({session:{requestReferenceSpace:async()=>({}),requestHitTestSource:async()=>({cancel(){}})}});
+  await setImmediate();
+  const bad=plane('invalid',[0,1.6,-2]);bad.pose.transform.matrix.fill(NaN);
+  const good=plane('good',[0,1.6,-3]);
+  placement.update(frame({planes:[bad,good]}),1000);
+  close(placement.candidate.point.z,-3);
+  const singular=pose();singular.transform.matrix.fill(0);
+  placement.update(frame({hits:[singular]}),1100);
+  assert.equal(placement.candidate,null);
+  placement.update(frame({planes:[good],viewer:singular}),1200);
+  assert.equal(placement.diagnostics().tracking,false);
+});
 
 test('native plane detection rejects floors and places the nearest vertical wall facing the viewer', () => {
   const { placement } = fixture();
@@ -339,7 +455,7 @@ test('touch unavailable geometry and room capture failures explain distance cont
     throw Object.assign(new Error('unavailable'), { name: 'NotSupportedError' });
   } } }).placement;
   failing.update(frame(), 1000);
-  assert.match(failing.guidance().join(' '), /画面中央.*配置ボタン/);
+  assert.match(failing.guidance().join(' '), /画面中央.*部屋をスキャン/);
   failing.confirm(frame(), null, 1000);
   await setImmediate();
   assert.match(failing.guidance().join(' '), /部屋スキャンを利用できません.*距離指定/);
