@@ -29,6 +29,7 @@ function jsonChunk(buffer) {
 }
 const demo = JSON.parse(await readFile(new URL('../public/demo/motion.json', import.meta.url), 'utf8'));
 const capture = JSON.parse(await readFile(new URL('./fixtures/capture-sample.json', import.meta.url), 'utf8'));
+const headOnlyCapture = { ...capture, frames: capture.frames.map(frame => ({ ...frame, left: null, right: null })) };
 
 test('VRMA GLB follows VRMC_vrm_animation 1.0 hierarchy and channel restrictions', async () => {
   const vrm = await avatar();
@@ -109,6 +110,34 @@ for (const [name, source, samples] of [['demo choreography', demo, [0, 7.5, 17.7
     mixer.stopAllAction();
   });
 }
+
+test('head-only capture identifies unavailable hands and replays through standard VRMA without inventing hand motion', async () => {
+  const vrm = await avatar(), expectedVRM = await avatar();
+  const exported = exportMotionVRMA(vrm, headOnlyCapture);
+  assert.match(jsonChunk(exported).extras.source, /head capture only; hands not tracked/);
+  const source = await parseVRMA(exported);
+  assert.equal(source.version, 1); assert.equal(source.duration, headOnlyCapture.duration);
+  const player = createVRMAPlayer(vrm, source);
+  // Use a separate rig for reference poses: mutating the mixer's own rig
+  // between seeks bypasses Three's cached constant animation properties.
+  for (const t of [0, .5, 1, 1.5, 2, .5]) {
+    applyCaptureToVRM(expectedVRM, headOnlyCapture, t);
+    player.seek(t);
+    const expected = expectedVRM.humanoid.getNormalizedPose(), actual = vrm.humanoid.getNormalizedPose();
+    for (const [bone, pose] of Object.entries(expected)) {
+      const a = new THREE.Quaternion().fromArray(pose.rotation), b = new THREE.Quaternion().fromArray(actual[bone].rotation);
+      assert.ok(a.angleTo(b) < .001, `${bone} differs from head-only preview at ${t}`);
+    }
+    assert.ok(new THREE.Vector3().fromArray(expected.hips.position).distanceTo(new THREE.Vector3().fromArray(actual.hips.position)) < .00001);
+  }
+  player.dispose();
+});
+
+test('camera export metadata identifies estimates instead of WebXR device tracking', async () => {
+  const vrm = await avatar();
+  const exported = exportMotionVRMA(vrm, { ...capture, referenceSpace: 'camera' });
+  assert.match(jsonChunk(exported).extras.source, /^Camera pose estimates;/);
+});
 
 test('export preserves live pose, expressions and world presentation transforms', async () => {
   const vrm = await avatar();

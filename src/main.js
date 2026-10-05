@@ -2,6 +2,7 @@ import './style.css';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { cue, DURATION } from './timeline.js';
 import { validateDemoMotion } from './demo-motion.js';
@@ -70,6 +71,7 @@ let playbackChoice = 'demo', playbackChoiceMade = false;
 let previewTime = 0, previewOrigin = 0, pendingPlacement = false, lastUI = 0;
 let referenceSpaceType = 'local', liveTracking = null, previewAfterXR = false, autoplayAfterXR = true, xrInputReady = false, trackingReport = {state: 'not-started'};
 let sessionInputMode = 'controller', pendingTouchPlacement = false;
+let sessionType = null, lastSessionType = null;
 let cameraActive = false, cameraBusy = false, cameraTracking = null, cameraRequest = 0, cameraObservedAt = -Infinity;
 const cameraAvailable = isSecureContext && !!navigator.mediaDevices?.getUserMedia;
 let markerActive = false, markerBusy = false, markerRequest = 0, markerReturnFocus = null;
@@ -91,7 +93,7 @@ const liveRoom = new LiveRoom({
     $('lan-status').textContent = message;
     if (state === 'connected' && liveRole === 'audience') {
       stop(); activeSource = 'live'; $('track-title').textContent = 'LAN LIVE';
-      status('LANルームに接続しました。出演者の配信をこの画面とARで視聴できます。');
+      status('LANルームに接続しました。出演者の配信をこの画面とAR・VRで視聴できます。');
     }
     if (state !== 'connected') {
       livePerformer.clear(); livePresence.clear(); sharedHead = false;
@@ -178,14 +180,16 @@ function updateButtons() {
   $('play').disabled = !ready() || busy || viewingLAN;
   $('model').disabled = loading || busy;
   $('motion-file').disabled = busy || viewingLAN;
-  $('ar').disabled = !ready() || !arViewMode({arSupported, cameraAvailable}) || busy;
+  $('ar').disabled = !ready() || !arViewMode({arSupported, vrSupported, cameraAvailable}) || busy;
+  $('vr').disabled = !ready() || !vrSupported || busy;
+  $('vr').hidden = !vrSupported || !arSupported;
   $('marker-start').disabled = !ready() || !cameraAvailable || busy;
   $('marker-size').disabled = busy;
   $('record-xr').disabled = !ready() || !headset || busy || viewingLAN;
   $('record-music').disabled = xrBusy || !!session || cameraMusic.pending || cameraRecorder.state==='recording';
   $('music-check').disabled = !ready() || busy || viewingLAN;
   $('take-play').disabled = !ready() || !selectedTake || busy || viewingLAN;
-  $('take-ar').disabled = !ready() || !selectedTake || !arViewMode({arSupported, cameraAvailable}) || busy || viewingLAN;
+  $('take-ar').disabled = !ready() || !selectedTake || !arViewMode({arSupported, vrSupported, cameraAvailable}) || busy || viewingLAN;
   $('playback-source').disabled = busy || viewingLAN;
   $('playback-take').disabled = !selectedTake;
   $('playback-source').value = playbackChoice;
@@ -510,6 +514,7 @@ function finishRecording() {
 async function endXR() { if(session)await session.end().catch(()=>{}); }
 function restorePreview() {
   walls.end();pendingPlacement=false;xrInputReady=false;controls.enabled=true;
+  hud.resetInputs();hud.setActions([]);
   pendingTouchPlacement=false;$('xr-touch-overlay').hidden=true;
   stage.visible=true;stage.position.set(0,0,0);stage.rotation.set(0,0,0);
   stage.scale.setScalar(Number($('width').value)/2.4);
@@ -565,11 +570,17 @@ audio.addEventListener('pause', () => {
   }
 });
 async function select(event) {
-  if(!session || !ready() || !xrInputReady)return;
+  if(!session || session.visibilityState!=='visible' || !ready() || !xrInputReady)return;
   if(sessionMode==='live' && sessionInputMode==='touch')return;
-  if (hud.select(event.frame, event.inputSource, renderer.xr.getReferenceSpace())) {
+  const action = hud.selectAction(event.frame, event.inputSource, renderer.xr.getReferenceSpace());
+  if (action === 'blocked') return;
+  if (action === 'exit') {
     finishRecording();await endXR();return;
   }
+  if (action === 'reposition') {resetLivePlacement();return;}
+  if (action === 'mode') {resetLivePlacement(walls.mode === 'auto' ? 'distance' : 'auto');return;}
+  if (action === 'scan') {await walls.requestRoomCapture();return;}
+  if (action === 'recenter') {reposition();return;}
   if(sessionMode==='record') {
     if(musicCapture.pending){musicCapture.cancel();$('record-status').textContent='開始をキャンセルしました。';return;}
     if(recorder.state==='recording'){finishRecording();await endXR();}
@@ -588,6 +599,30 @@ async function select(event) {
     stage.visible = true;
   }
 }
+function resetLivePlacement(mode) {
+  if (sessionMode !== 'live') return;
+  stop();pendingTouchPlacement=false;stage.visible=false;walls.reset({mode});
+  syncXRHUDActions();
+}
+function syncXRHUDActions() {
+  if (!session || !xrInputReady || sessionInputMode === 'touch') {hud.setActions([]);return;}
+  if (sessionMode === 'record') {
+    hud.setActions([
+      {id:'record',label:recorder.state==='recording'?'保存してプレビュー':musicCapture.pending?'開始をキャンセル':'収録を開始',enabled:!!liveTracking?.sample?.head || musicCapture.pending || recorder.state==='recording'},
+      {id:'recenter',label:'正面を合わせる',enabled:recorder.state!=='recording'},
+    ]);return;
+  }
+  const actions = [walls.placed
+    ? {id:'play',label:watchingLAN()?'LANライブを受信':playing?'一時停止':activeSource==='take'?'モーションを再生':'ライブを再生',enabled:!watchingLAN() && !!walls.report.tracking}
+    : {id:'place',label:'ここに配置',enabled:!!walls.report.tracking && (!!walls.candidate || walls.mode==='manual')},
+    {id:'reposition',label:'置き直す'}];
+  if (sessionType === 'immersive-ar') {
+    actions.push({id:'mode',label:walls.mode==='auto'?'距離指定へ':'壁の自動検出へ'});
+    if (walls.mode==='auto' && !walls.placed && walls.report.roomCapture!=='unavailable')
+      actions.push({id:'scan',label:walls.roomAttempted?'部屋スキャン要求済み':'部屋をスキャン',enabled:walls.canRequestRoomCapture()});
+  }
+  hud.setActions(actions);
+}
 function reposition() {
   if (sessionMode === 'record' && recorder.state !== 'recording') {
     musicCapture.cancel();liveSampler.reset({referenceSpaceType});pendingPlacement = true;return;
@@ -605,15 +640,23 @@ for(let i=0;i<2;i++) {
   const marker=new THREE.Mesh(new THREE.SphereGeometry(.025,12,8),new THREE.MeshBasicMaterial({color:i?0xb8a0ff:0xc6ff75}));
   grip.add(marker);scene.add(grip);
 }
-async function enterXR(mode) {
+// Hand permission replaces the platform's hand visualization on visionOS.
+// Procedural joint spheres require no external model or network download.
+const handModels = new XRHandModelFactory();
+for (let i=0;i<6;i++) {
+  const hand=renderer.xr.getHand(i);
+  hand.add(handModels.createHandModel(hand,'spheres'));scene.add(hand);
+}
+async function enterXR(mode, sessionPreference = 'auto') {
   if(!ready() || session || xrBusy || markerActive || cameraActive || cameraBusy || liveRoom.state === 'connecting')return;
   if(mode === 'record' && watchingLAN())return;
   stop();xrBusy=true;xrInputReady=false;previewAfterXR=false;autoplayAfterXR=true;
   if (mode === 'record') {musicCapture.cancel();musicCapture.error=null;recorder.cancel();liveTracking=null;}
   else {activeSource = resolvePlaybackSource(playbackChoice, selectedTake, {watchingLAN: watchingLAN()});updateTrackTitle();}
   updateButtons();
-  const options=xrSessionOptions({mode,vrSupported,preference:$('xr-input-mode').value,
+  const options=xrSessionOptions({mode,arSupported,vrSupported,sessionPreference,preference:$('xr-input-mode').value,
     placementMode:$('placement-mode').value,overlayRoot:$('xr-touch-overlay')});
+  if (!options) {xrBusy=false;updateButtons();status('このブラウザでは対応するXRセッションを開始できません。');return;}
   const {type,inputMode}=options;sessionInputMode=inputMode;
   try {
     // requestSession is called directly inside the user gesture, before any await.
@@ -622,14 +665,15 @@ async function enterXR(mode) {
     if(mode==='live' && activeSource==='take' && takeWithMusic())captureAudio.prepare().catch(()=>{});
     if(mode==='record' && $('record-music').checked)captureAudio.prepare().catch(()=>{});
     const next = await request;
-    session = next;sessionMode = mode;controls.enabled=false;
+    session = next;sessionMode = mode;sessionType=type;lastSessionType=type;controls.enabled=false;
+    hud.resetInputs();
     renderer.setClearColor(type==='immersive-ar'?0:0x101117,type==='immersive-ar'?0:1);
     next.addEventListener('end', () => {
       const wasRecording = sessionMode === 'record';
       finishRecording();previewAfterXR = wasRecording && recorder.frameCount > 0 && !!recorder.lastClip;
       if (wasRecording) trackingReport.state = 'ended';
-      session=null;sessionMode=null;stop();restorePreview();
-      updateButtons();status(activeSource === 'take' ? 'XRを終了しました。選択したモーションはページでもARでも再確認できます。' : 'XRを終了しました。ページに戻りました。');
+      session=null;sessionMode=null;sessionType=null;stop();restorePreview();
+      updateButtons();status(activeSource === 'take' ? 'XRを終了しました。選択したモーションはページでもAR・VRでも再確認できます。' : 'XRを終了しました。ページに戻りました。');
     },{once:true});
     await renderer.xr.setSession(next);
     if (session !== next || !renderer.xr.isPresenting) return;
@@ -648,15 +692,19 @@ async function enterXR(mode) {
     }
     if (mode === 'live') {
       stage.visible = false;
-      walls.start(next, reference, {mode: $('placement-mode').value, inputMode, width: Number($('width').value), distance: Number($('distance').value)});
+      walls.start(next, reference, {mode: $('placement-mode').value, inputMode, environment:type==='immersive-vr'?'vr':'ar', width: Number($('width').value), distance: Number($('distance').value)});
     }
+    next.addEventListener('selectstart',event=>{if(xrInputReady)hud.beginSelect(event.frame,event.inputSource,renderer.xr.getReferenceSpace());});
     next.addEventListener('select', select);
+    next.addEventListener('selectend',event=>hud.endSelect(event.inputSource));
+    next.addEventListener('inputsourceschange',event=>{for(const source of event.removed ?? [])hud.endSelect(source);});
     next.addEventListener('squeeze', reposition);
-    const recentered=()=>{if(sessionMode==='record'){finishRecording();endXR();}else{stop();stage.visible=false;walls.reset();}};
+    const recentered=()=>{hud.resetInputs();if(sessionMode==='record'){finishRecording();endXR();}else{stop();stage.visible=false;walls.reset();}};
     reference.addEventListener('reset',recentered);
     next.addEventListener('end',()=>reference.removeEventListener('reset',recentered),{once:true});
     next.addEventListener('visibilitychange',()=>{
       if(next.visibilityState==='visible')return;
+      hud.resetInputs();
       if(mode==='record') {
         // A system overlay or removed headset must not leave music playing
         // while motion frames have stopped arriving.
@@ -665,14 +713,17 @@ async function enterXR(mode) {
       } else stop(false);
     });
     xrInputReady = true;
-    status(mode==='record'?'トリガーで3秒後に収録開始。正面を見て両手を自然に構えてください。':inputMode==='touch'?'画面中央を壁に向け、「ここに配置」をタップしてください。':'壁の候補を確認してトリガーで配置。もう一度押すと開演します。');
+    syncXRHUDActions();
+    status(mode==='record'?'「収録を開始」を選ぶと3秒後に収録開始。手またはコントローラーで操作できます。':type==='immersive-vr'?'VRステージを配置します。見たい方向を向いて「ここに配置」を選んでください。実際の壁は検出しません。':inputMode==='touch'?'画面中央を壁に向け、「ここに配置」をタップしてください。':'壁の候補を確認して「ここに配置」を選び、再生します。ピンチまたはトリガーで操作できます。');
   } catch(error) {
-    musicCapture.cancel();await endXR();session=null;sessionMode=null;restorePreview();
-    status(inputMode==='touch'?'ARを開始できません。ARCore対応Android、Google Play開発者サービス（AR）、Chrome、カメラ権限を確認してください。3Dプレビューとカメラ収録も利用できます。':'XRを開始できません。PICOブラウザ・HTTPS・権限を確認してください。');console.error(error);
+    musicCapture.cancel();await endXR();session=null;sessionMode=null;sessionType=null;restorePreview();
+    if (type==='immersive-ar' && error.name==='NotSupportedError' && vrSupported) arSupported=false;
+    status(type==='immersive-ar' && vrSupported?'ARを開始できませんでした。「VRでステージを開く」からVR視聴を開始できます。':inputMode==='touch'?'ARを開始できません。ARCore対応Android、Google Play開発者サービス（AR）、Chrome、カメラ権限を確認してください。': 'XRを開始できません。Vision ProのSafari、QuestまたはPICOのブラウザ・HTTPS・権限を確認して再試行してください。');console.error(error);
   } finally {xrBusy=false;updateButtons();}
 }
-function enterAR() {return arViewMode({arSupported, cameraAvailable}) === 'marker' ? enterMarker() : enterXR('live');}
+function enterAR() {return arViewMode({arSupported, vrSupported, cameraAvailable}) === 'marker' ? enterMarker() : enterXR('live');}
 $('ar').onclick = enterAR;
+$('vr').onclick = () => enterXR('live','vr');
 $('take-ar').onclick = () => {choosePlayback('take');enterAR();};
 $('record-xr').onclick = () => enterXR('record');
 $('exit-xr').onclick = () => {finishRecording();endXR();};
@@ -697,7 +748,7 @@ renderer.xr.addEventListener('sessionend', () => {
 });
 $('xr-diagnostics').onclick = () => {
   const data = {timestamp: new Date().toISOString(), userAgent: navigator.userAgent,
-    secureContext: isSecureContext, arSupported, vrSupported, inputMode:sessionInputMode, wall: walls.diagnostics(), tracking: trackingReport,
+    secureContext: isSecureContext, arSupported, vrSupported, sessionType:sessionType ?? lastSessionType, inputMode:sessionInputMode, wall: walls.diagnostics(), tracking: trackingReport,
     camera:{available:cameraAvailable,active:cameraActive,quality:cameraTracking?.quality ?? null,bodyCount:cameraTracking?.bodyCount ?? 0},
     marker:{active:markerActive,tracked:markerAR.tracked,size:Number($('marker-size').value) / 100}};
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
@@ -712,10 +763,13 @@ async function detectXR() {
 }
 function updateXRLabels() {
   const input=xrInputMode($('xr-input-mode').value,vrSupported);
-  $('ar').textContent=arSupported?(playbackChoice==='take' && !watchingLAN()?'選択モーションをARで確認 ↗':input==='touch'?'スマホARでステージを開く ↗':'ARでステージを開く ↗'):cameraAvailable?'マーカーARでステージを開く ↗':'ARにはHTTPSとカメラが必要';
+  $('ar').textContent=arSupported?(playbackChoice==='take' && !watchingLAN()?'選択モーションをARで確認 ↗':input==='touch'?'スマホARでステージを開く ↗':'ARでステージを開く ↗'):vrSupported?(playbackChoice==='take' && !watchingLAN()?'選択モーションをVRで確認 ↗':'VRでステージを開く ↗'):cameraAvailable?'マーカーARでステージを開く ↗':'ARにはHTTPSとカメラが必要';
+  $('vr').textContent='VRでステージを開く';
+  $('take-ar').textContent=!arSupported && vrSupported?'このモーションをVRで確認':'このモーションをARで確認';
   $('record-xr').textContent=vrSupported || (arSupported && input==='controller')?'HMDでモーションを収録':'HMD収録には対応ヘッドセットが必要';
   $('wall-capability').textContent=arSupported
     ? 'マーカー不要。ARを開始すると、平面・交点・奥行き情報から壁を探します。取得できた情報と検出状況はAR中に表示します。'
+    : vrSupported ? 'この端末はVRライブに対応しています。VR空間にステージを配置して視聴・モーション確認・LAN参加ができます。実際の壁の検出やパススルーARは利用しません。'
     : 'このブラウザではWebXR ARを利用できないため、壁の自動検出は開始できません。下のマーカーARは印刷マーカーを使う別の方式です。AndroidではARCore対応端末とChromeを確認してください。';
 }
 
@@ -899,7 +953,7 @@ renderer.setAnimationLoop((time,frame) => {
       $('lan-status').textContent = `${liveRole === 'performer' ? '出演者として配信' : '観客として接続'} · ${liveRoom.peers.length + 1}人が参加中`;
       $('lan-tracking').textContent = !$('lan-share').checked ? '自分の姿勢の共有を停止しています。受信は続けます。'
         : liveRole === 'performer' ? sharedHead ? 'モーションを配信中。観客側では受信した動きを表示します。' : 'カメラを準備するか、HMDの収録画面を開くと配信します。追跡が途切れたモデルは観客側で非表示になります。'
-        : `${remotePerformance ? '出演者の動きを受信中。' : '出演者の配信・追跡を待っています。'} ${sharedHead ? (liveDevice === 'phone' ? 'スマホ位置の顔アバターを共有中（手は共有しません）。' : '自分のAR位置を共有中。') : liveDevice === 'desktop' ? 'PCでは3D視聴のみ。自分の位置は送信しません。' : 'ARで同じステージ位置を配置すると、自分の位置も共有します。'}`;
+        : `${remotePerformance ? '出演者の動きを受信中。' : '出演者の配信・追跡を待っています。'} ${sharedHead ? (liveDevice === 'phone' ? 'スマホ位置の顔アバターを共有中（手は共有しません）。' : 'ステージを基準に自分の位置を共有中。') : liveDevice === 'desktop' ? 'PCでは3D視聴のみ。自分の位置は送信しません。' : 'AR・VRでステージを配置すると、自分の位置も共有します。'}`;
     } else {$('lan-tracking').textContent = '';}
     $('phase').textContent=state.label;$('time').textContent=formatTime(t);$('duration').textContent=formatTime(duration());
     $('seek').max=duration();$('seek').value=t;
@@ -921,7 +975,7 @@ renderer.setAnimationLoop((time,frame) => {
       const limit=musicCapture.withMusic?'01:12':'03:00';
       const title=musicCapture.preparing?'MUSIC LOADING…':musicCapture.error?'MUSIC ERROR':countdown!==null?(performance.now()<countdown?`START IN ${Math.ceil((countdown-performance.now())/1000)}`:'TRACKING…'):recording?`● REC ${formatTime(recorder.duration)} / ${limit}`:'MOTION CAPTURE';
       const musicHint=($('record-music').checked?'NEON DOOR':'音楽なし');
-      const detail=musicCapture.error || (musicCapture.preparing?'音楽を準備中 · トリガーでキャンセル':countdown!==null?`${musicHint} · 追跡が安定したら同時に開始`:recording?`${musicHint} · トリガーで保存してプレビュー`:`${musicHint} · トリガーで収録 · グリップで正面合わせ`);
+      const detail=musicCapture.error || (musicCapture.preparing?'音楽を準備中 · 開始をキャンセルできます':countdown!==null?`${musicHint} · 追跡が安定したら同時に開始`:recording?`${musicHint} · 保存してプレビューで終了`:`${musicHint} · 収録を開始 / 正面を合わせる`);
       const bodyHint = trackingReport.bodyStatus === 'tracked' ? `身体${trackingReport.bodyCount}関節` : '身体は頭・手から推定';
       const trackingHint = !liveTracking?.sample?.head ? '頭の追跡を待っています' : `左手${liveTracking.sample.left?'○':'×'} 右手${liveTracking.sample.right?'○':'×'} · ${bodyHint}`;
       hud.update(renderer.xr.getCamera(),liveRoom.connected && liveRole==='performer'?`LAN配信 / ${title}`:title,`${trackingHint} / ${detail}`,true,recording);
@@ -931,10 +985,10 @@ renderer.setAnimationLoop((time,frame) => {
       const takeSelected = activeSource === 'take';
       const liveTitle = viewingLAN && walls.placed ? remotePerformance ? 'LAN LIVE / 配信中' : 'LAN LIVE / 配信待ち'
         : takeSelected && walls.placed ? 'MOTION PREVIEW / 選択モーション' : title;
-      const liveDetail = viewingLAN && walls.placed ? '観客の顔も表示中 · グリップで再配置 · 終了は下のボタン'
+      const liveDetail = viewingLAN && walls.placed ? '観客の顔も表示中 · 置き直すで再配置 · ページへ戻るで終了'
         : takeSelected && walls.placed ? sessionInputMode === 'touch' ? '「モーションを再生」で開始 · 「置き直す」で再配置'
-          : 'トリガーでモーションを再生 · グリップで再配置' : detail;
-      hud.update(renderer.xr.getCamera(),playing?`${takeSelected?'MOTION / ':''}${formatTime(t)} / ${formatTime(duration())}`:liveTitle,playing?'トリガーで一時停止 · グリップで再配置':liveDetail,sessionInputMode!=='touch');
+          : 'モーションを再生で開始 · 置き直すで再配置' : detail;
+      hud.update(renderer.xr.getCamera(),playing?`${takeSelected?'MOTION / ':''}${formatTime(t)} / ${formatTime(duration())}`:liveTitle,playing?'一時停止 / 置き直す / ページへ戻る':liveDetail,sessionInputMode!=='touch');
       if(sessionInputMode==='touch') {
         $('xr-touch-status').textContent=viewingLAN && walls.placed?`${liveTitle} · 顔アバターの位置はスマホ位置が目安です。`:playing?`${formatTime(t)} / ${formatTime(duration())} · ${takeSelected?'モーション':'ライブ'}再生中`:`${liveTitle}。${liveDetail}`;
         $('xr-touch-place').disabled=!!walls.placed || !walls.candidate || !walls.report.tracking;
@@ -947,13 +1001,13 @@ renderer.setAnimationLoop((time,frame) => {
       }
       const report = walls.diagnostics();
       const source=report.placementSource ?? walls.candidate?.source;
-      const sourceLabel={'plane-detection':'平面検出','hit-test':'垂直面の交点','depth-sensing':'奥行きからの壁推定',distance:'距離指定',manual:'3点指定'}[source];
+      const sourceLabel={'plane-detection':'平面検出','hit-test':'垂直面の交点','depth-sensing':'奥行きからの壁推定',distance:'距離指定',manual:'3点指定','virtual-stage':'VRステージ'}[source];
       $('wall-status').textContent = `${title}。${detail}（平面 ${report.planes} / 垂直面 ${report.verticalPlanes}${sourceLabel?` / ${sourceLabel}`:''}）`;
     }
     lastUI=time;
   }
   // Reposition head-locked HUD every frame; texture only changes with text.
-  if(session) {hud.follow(renderer.xr.getCamera());hud.updatePointers(frame, session.inputSources, renderer.xr.getReferenceSpace());}
+  if(session) {syncXRHUDActions();hud.follow(renderer.xr.getCamera());hud.updatePointers(frame, session.inputSources, renderer.xr.getReferenceSpace());}
   else if (!markerActive) controls.update();
   renderer.render(scene,camera);
 });

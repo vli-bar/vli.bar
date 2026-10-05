@@ -34,16 +34,17 @@ export class WallPlacement {
     this.visuals.visible = false;
   }
 
-  start(session, referenceSpace, {mode = 'auto', width = 2.4, distance = 2, inputMode = 'controller'} = {}) {
+  start(session, referenceSpace, {mode = 'auto', width = 2.4, distance = 2, inputMode = 'controller', environment = 'ar'} = {}) {
     this.end();
     this.session = session; this.referenceSpace = referenceSpace;
     this.inputMode = inputMode === 'touch' ? 'touch' : 'controller';
-    this.mode = resolveMode(mode, this.inputMode); this.width = width; this.distance = distance;
+    this.environment = environment === 'vr' ? 'vr' : 'ar';
+    this.mode = this.environment === 'vr' ? 'distance' : resolveMode(mode, this.inputMode); this.width = width; this.distance = distance;
     this.points = []; this.candidate = null; this.placed = null; this.message = '';
     this.roomAttempted = false; this.viewer = null; this.lastUpdate = -Infinity;
     this.depthStable = null;
     const roomAvailable = typeof session.initiateRoomCapture === 'function' && (!session.enabledFeatures || Array.from(session.enabledFeatures).includes('plane-detection'));
-    this.report = {state: 'active', mode: this.mode, inputMode: this.inputMode, enabledFeatures: session.enabledFeatures ? Array.from(session.enabledFeatures) : null,
+    this.report = {state: 'active', mode: this.mode, environment:this.environment, inputMode: this.inputMode, enabledFeatures: session.enabledFeatures ? Array.from(session.enabledFeatures) : null,
       planeAPI: this.mode === 'auto' ? 'waiting' : 'not-requested', planes: 0, verticalPlanes: 0,
       hitTest: this.mode === 'auto' ? 'waiting' : 'disabled', depth: this.mode === 'auto' ? 'waiting' : 'disabled',
       roomCapture: roomAvailable ? 'available' : 'unavailable'};
@@ -82,7 +83,7 @@ export class WallPlacement {
 
   reset({switchToManual = false, mode} = {}) {
     const previousMode = this.mode;
-    this.mode = resolveMode(mode ?? (switchToManual ? 'manual' : this.mode), this.inputMode);
+    this.mode = this.environment === 'vr' ? 'distance' : resolveMode(mode ?? (switchToManual ? 'manual' : this.mode), this.inputMode);
     this.points = []; this.placed = null; this.candidate = null; this.message = '';
     this.depthStable = null; delete this.report.depthMetrics; delete this.report.depthReason;
     this.report.depth = this.mode === 'auto' ? 'waiting' : 'disabled';
@@ -129,7 +130,7 @@ export class WallPlacement {
       direction.y = 0;
       if (direction.lengthSq() < .001) return;
       direction.normalize();
-      this.candidate = {point: this.viewer.clone().addScaledVector(direction, this.distance), normal: direction.clone().negate(), source: 'distance'};
+      this.candidate = {point: this.viewer.clone().addScaledVector(direction, this.distance), normal: direction.clone().negate(), source: this.environment === 'vr' ? 'virtual-stage' : 'distance'};
     } else {
       this.scanPlanes(frame, {origin: this.viewer, direction});
       if (!this.candidate && !this.report.blockedBySurface && this.hitSource) this.scanHits(frame);
@@ -266,7 +267,7 @@ export class WallPlacement {
     if (!this.canRequestRoomCapture()) {
       this.message = this.inputMode === 'touch'
         ? (this.mode === 'distance' ? 'スマホを壁に向け、配置ボタンを押してください' : '壁が見つからない場合は距離指定へ切り替えてください')
-        : '壁が見つからない場合はグリップで3点指定へ';
+        : '壁が見つからない場合は距離指定へ。コントローラーなら3点指定も使えます';
       return;
     }
     this.roomAttempted = true; this.report.roomCapture = 'requested';
@@ -279,7 +280,7 @@ export class WallPlacement {
         this.report.roomCapture = error.name;
         if (this.mode === 'auto') this.message = this.inputMode === 'touch'
           ? '部屋スキャンを利用できません。距離指定へ切り替えてください'
-          : '部屋スキャンを利用できません。グリップで3点指定へ';
+          : '部屋スキャンを利用できません。距離指定、またはコントローラーで3点指定へ';
       }
     }
   }
@@ -292,18 +293,21 @@ export class WallPlacement {
   guidance() {
     const touch = this.inputMode === 'touch';
     if (!this.report.tracking) return ['位置を追跡中', '周囲を見て追跡の復帰を待ってください'];
-    if (this.placed) return ['ステージを配置しました', touch ? '再生ボタンで開演 · 再配置ボタンで位置を変更' : 'トリガーで開演 · グリップで再配置'];
+    if (this.environment === 'vr') return this.placed
+      ? ['VRステージを配置しました', '再生ボタンで開演 · 置き直すボタンで位置を変更']
+      : ['VRステージの位置を選択', '見たい方向を向き、ここに配置を選択してください（実際の壁は検出しません）'];
+    if (this.placed) return ['ステージを配置しました', touch ? '再生ボタンで開演 · 再配置ボタンで位置を変更' : 'ライブを再生で開演 · 置き直すで再配置'];
     if (this.message) return ['壁の配置', this.message];
     if (this.mode === 'manual') return [`壁の3点指定 ${this.points.length + 1}/3 · ${pointNames[this.points.length]}`, '緑の点を指定位置に合わせてトリガー'];
-    if (this.candidate) return [this.mode === 'distance' ? '指定距離で配置（壁検出なし）' : '壁の候補を検出', touch ? '画面中央の枠を確認し、配置ボタンを押してください' : '枠の位置でトリガー → 配置 · もう一度で開演'];
+    if (this.candidate) return [this.mode === 'distance' ? '指定距離で配置（壁検出なし）' : '壁の候補を検出', touch ? '画面中央の枠を確認し、配置ボタンを押してください' : '枠を確認して「ここに配置」を選択 · ピンチまたはトリガーで操作'];
     if (this.mode === 'distance') return ['配置位置を調整中（壁検出なし）', touch ? 'スマホを正面に向け、画面中央の枠を確認してください' : '壁を正面に見て、配置する枠を確認してください'];
     if (this.report.blockedBySurface) return ['壁の前に物があります', '家具を避け、壁が見える位置にゆっくり向きを変えてください'];
     if (this.report.depth === 'stabilizing') return ['壁の奥行きを確認中', '壁の中心に向けたまま、少し静止してください'];
     if (['sparse', 'not-planar', 'not-vertical', 'invalid-depth', 'tracking'].includes(this.report.depth)) return ['奥行きから壁を探しています', '床や家具を避け、壁を広く映しながらゆっくり見回してください'];
-    if (this.report.planeAPI !== 'available' && !['available', 'waiting'].includes(this.report.hitTest) && this.report.depth === 'unavailable') return ['壁情報を取得できません', touch ? '距離指定へ切り替えて配置してください' : 'グリップでコントローラーによる3点指定へ'];
+    if (this.report.planeAPI !== 'available' && !['available', 'waiting'].includes(this.report.hitTest) && this.report.depth === 'unavailable') return ['壁情報を取得できません', touch ? '距離指定へ切り替えて配置してください' : '距離指定へ切り替えるか、コントローラーによる3点指定へ'];
     const search = this.report.roomCapture === 'available'
-      ? (touch ? '画面中央を壁に向ける · 「部屋をスキャン」で端末の案内を開く' : '壁中心を見る · トリガーで部屋スキャン')
-      : (touch ? '画面中央を壁に向ける · 見つからない場合は距離指定へ' : '壁中心を見る · グリップで3点指定へ');
+      ? (touch ? '画面中央を壁に向ける · 「部屋をスキャン」で端末の案内を開く' : '壁中心を見る · 「部屋をスキャン」で端末の案内を開く')
+      : (touch ? '画面中央を壁に向ける · 見つからない場合は距離指定へ' : '壁中心を見る · 見つからない場合は距離指定へ');
     return [`壁を探しています · 垂直面 ${this.report.verticalPlanes}`, search];
   }
 

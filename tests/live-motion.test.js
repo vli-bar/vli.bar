@@ -66,6 +66,52 @@ test('standard hand wrist input takes precedence and missing wrists fall back to
   assert.equal(hidden.sample.body, null);
 });
 
+test('visionOS transient pinch sources never become recorded hands without hand tracking permission', () => {
+  const live = new LiveMotionSampler();
+  const recorder = new MotionRecorder(); recorder.start();
+  const frame = xrFrame();
+  let pinchReads = 0;
+  frame.getPose = () => { pinchReads++; return xrPose(-.1, 1.3, -.1); };
+  const pinch = { targetRayMode: 'transient-pointer', handedness: 'left', gripSpace: 'pinch' };
+  for (const [index, sources] of [[], [pinch], []].entries()) {
+    frame.session.inputSources = sources;
+    const tracking = live.sampleFrame(index * 40, frame, reference);
+    assert.ok(tracking.sample.head);
+    assert.equal(tracking.sample.left, null); assert.equal(tracking.sample.right, null);
+    assert.deepEqual(tracking.sources, { left: 'unavailable', right: 'unavailable' });
+    assert.equal(recorder.recordSample(index * 40, tracking), true);
+  }
+  const clip = recorder.stop();
+  assert.equal(pinchReads, 0, 'pinch grip is an interaction point, not tracked hand motion');
+  assert.ok(clip.frames.every(sample => sample.head && sample.left === null && sample.right === null));
+  assert.equal(clip.tracking.body, 'inferred');
+});
+
+test('visionOS wrist motion stays continuous across pinch lifecycle and input source ordering', () => {
+  const live = new LiveMotionSampler();
+  const frame = xrFrame();
+  const hands = ['left', 'right'].map(side => ({ targetRayMode: 'tracked-pointer', handedness: side, hand: new Map([['wrist', side]]) }));
+  const pinch = { targetRayMode: 'transient-pointer', handedness: 'left', gripSpace: 'pinch' };
+  let wristX = -.3, pinchReads = 0;
+  frame.getJointPose = side => xrPose(side === 'left' ? wristX : .3, 1.2, -.2);
+  frame.getPose = () => { pinchReads++; return xrPose(-.1, 1.3, -.1); };
+  const sequences = [hands, [...hands, pinch], [pinch, ...hands], hands];
+  for (const [index, sources] of sequences.entries()) {
+    frame.session.inputSources = sources; wristX -= .02;
+    const tracking = live.sampleFrame(index * 40, frame, reference);
+    assert.deepEqual(tracking.sources, { left: 'hand-wrist', right: 'hand-wrist' });
+    assert.ok(Math.abs(tracking.sample.left.position[0] - wristX) < 1e-6);
+    assert.equal(tracking.sample.right.position[0], .3);
+    assert.equal(tracking.sample.body, null);
+  }
+  // Losing the wrist during a pinch must clear the hand, never substitute pinch.
+  frame.session.inputSources = [...hands, pinch];
+  frame.getJointPose = () => null;
+  const lost = live.sampleFrame(200, frame, reference);
+  assert.equal(lost.sample.left, null); assert.equal(lost.sample.right, null);
+  assert.equal(pinchReads, 0, 'pinch cannot substitute for a tracked wrist');
+});
+
 test('browser body joints share the live head origin and survive recording, import and interpolation', () => {
   const live = new LiveMotionSampler();
   const frame = xrFrame(xrPose(2, 1.6, 3));

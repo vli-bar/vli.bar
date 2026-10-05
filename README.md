@@ -1,6 +1,6 @@
 # vli.bar — Live Lab
 
-壁の向こうにオリジナルVRMのライブステージが現れるARデモ。PICO・対応AndroidはWebXR、iPhoneはカメラで印刷マーカーを読む方式を使用します。
+壁の向こうにオリジナルVRMのライブステージが現れるARデモ。PICO・Quest・対応AndroidはWebXR AR、Vision ProはWebXR VR、iPhoneはカメラで印刷マーカーを読む方式を使用します。
 公開先: https://vli.bar/
 
 ## 開発
@@ -12,7 +12,7 @@ npm test
 npm run build
 ```
 
-ローカル表示: http://localhost:5173 。PICO・Android・iPhone実機でARやカメラを使う場合はHTTPSで開いてください。Androidの開発時はUSBポート転送によるlocalhostも利用できます。
+ローカル表示: http://localhost:5173 。HMD・スマホ実機でWebXRやカメラを使う場合はHTTPSで開いてください。Androidの開発時はUSBポート転送によるlocalhostも利用できます。
 
 ## ライブ
 
@@ -23,7 +23,15 @@ npm run build
 - 自動で配置する前にサイドグリップを押すと「3点指定」へ切り替え。コントローラーの緑の点を、壁の数cm手前の左下→右下→左上に移動して各点でトリガー。舞台は下辺の幅に合わせて縦横同じ倍率で拡大します。
 - 配置後のサイドグリップは停止・配置し直し。「距離を指定して配置」も選べます。「AR診断を保存」でAPIの利用状況をJSONへ保存できます。
 - WebXRでの操作・対応条件・診断項目は [壁へのステージ配置](docs/wall-placement.md)。部屋全体の認識、永続アンカー、自動の共有空間合わせは未実装。iPhone向けの印刷マーカーARは下記を参照してください。
-- PICO・Android・iPhone実機での動作・性能は未確認。WebXR非対応環境でも3Dプレビューを利用できます。
+- PICO・Quest・Vision Pro・Android・iPhone実機での動作・性能は未確認。WebXR非対応環境でも3Dプレビューを利用できます。
+
+## Vision Pro・Quest
+
+- Vision ProのSafariではVRでステージを表示します。ボタンを見てピンチすると、配置・再生・配置し直し・終了や、モーションの収録を操作できます。許可された手の追跡から手首を取得します。現実の壁へ重ねるARや、壁の自動検出は行いません。
+- Quest BrowserではパススルーARを優先し、ブラウザが提供する平面などを使って壁を検出します。空間設定と部屋情報の許可が必要です。コントローラーと手の操作に対応し、VR表示も選べます。
+- 選択したVRMA・保存済みモーション・LAN出演者の再生と、音楽付き収録・ダウンロードは共通です。HMD観客は取得できた頭と手をLANで共有します。身体関節が取得できない部位は推定です。
+
+操作・ブラウザの制約・検証範囲は[HMDでの利用](docs/headsets.md)。オフラインLANでは会場用CA証明書を信頼したHTTPS接続が必要です。Vision Pro・Quest実機の動作とWAN切断時の利用は未確認です。
 
 ## iPhone
 
@@ -59,7 +67,7 @@ ARの必要条件・カメラ操作・制約は [Androidでの利用](docs/andro
 
 ## Motion Studio
 
-PICOのコントローラーで収録する場合の操作です。Android・iPhoneのカメラ収録は上記の導線から利用できます。
+以下は主にPICO・Questのコントローラーで収録する場合の操作です。手での操作やVision Proは[HMDでの利用](docs/headsets.md)、Android・iPhoneのカメラ収録は上記の導線を参照してください。
 
 1. 「NEON DOORに合わせて収録」をオンにすると内蔵曲付き（72秒）、オフにすると無音。「収録用の曲を試聴」で確認し、PICOから「HMDでモーションを収録」。VRが使える場合はVRの収録室、なければARを利用。
 2. 待機中からアバターが頭・手の動きを反映します。グリップで正面を合わせ直し、トリガーで3秒のカウントダウン。終了すると曲の再生と約30Hzのモーション記録が始まります。

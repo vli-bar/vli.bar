@@ -67,6 +67,10 @@ export class LiveMotionSampler {
       result.sample.head = this.relativePose(viewer, 'viewer');
       for (const input of frame.session?.inputSources ?? []) {
         if (!['left', 'right'].includes(input.handedness)) continue;
+        // visionOS exposes a separate, short-lived input for each gaze/pinch
+        // gesture. Its grip is the pinch point, not a continuously tracked hand.
+        // Hand tracking arrives through persistent XRHand inputs instead.
+        if (input.targetRayMode === 'transient-pointer') continue;
         const side = input.handedness;
         let tracked = null;
         // Standard XRHand wrist input is optional. A controller is still usable

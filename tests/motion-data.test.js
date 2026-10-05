@@ -141,6 +141,34 @@ test('upload refuses oversized files before reading and reports invalid JSON', a
   assert.equal((await parseMotionFile({ size: text.length, text: async () => text })).frames.length, 3);
 });
 
+test('head-only take metadata survives save and import without claiming controller or wrist tracking', async () => {
+  const recorder = new MotionRecorder(); recorder.start();
+  recorder.recordFrame(0, frame(), reference);
+  recorder.recordFrame(34, frame(xrPose(.1)), reference);
+  const clip = recorder.stop();
+  assert.deepEqual(clip.tracking, { head: 'viewer', hands: 'unavailable', body: 'inferred' });
+  // Older saved clips may contain incorrect metadata; actual frames remain the
+  // source of truth, including when a caller supplies a conflicting claim.
+  clip.tracking.hands = 'controller-grip';
+  const text = serializeMotionClip(clip);
+  const imported = await parseMotionFile({ size: Buffer.byteLength(text), text: async () => text });
+  assert.equal(imported.version, 1);
+  assert.equal(imported.tracking.hands, 'unavailable');
+  assert.ok(imported.frames.every(sample => sample.head && sample.left === null && sample.right === null));
+  assert.equal(sampleMotionClip(imported, .017).head.position[0], .05);
+  assert.equal(validateMotionClip({ ...clip, referenceSpace: 'camera' }).tracking.hands, 'unavailable');
+});
+
+test('hand tracking metadata continues to distinguish legacy controller, wrist and mixed captures', () => {
+  const clip = take();
+  for (const frame of clip.frames) for (const side of ['left', 'right']) if (frame[side]) delete frame[side].source;
+  assert.equal(validateMotionClip(clip).tracking.hands, 'controller-grip');
+  for (const frame of clip.frames) for (const side of ['left', 'right']) if (frame[side]) frame[side].source = 'hand-wrist';
+  assert.equal(validateMotionClip(clip).tracking.hands, 'hand-wrist');
+  clip.frames[0].right.source = 'controller-grip';
+  assert.equal(validateMotionClip(clip).tracking.hands, 'mixed');
+});
+
 test('bundled accompaniment survives JSON import and stored-clip validation with its offset', async () => {
   for (const offset of [0, 12.3456789, 71.9999999]) {
     const clip = take();

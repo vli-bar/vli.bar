@@ -75,6 +75,31 @@ test('headsets prefer a real tracked wrist, fall back to a real grip, and never 
   assert.equal(sampleAudiencePose(frame, {}, stage, { device: 'headset' }).head, null);
 });
 
+test('headset audience hands ignore transient pinch input and retain persistent wrists regardless of ordering', () => {
+  const stage = new THREE.Group(), reference = {};
+  const pinch = { targetRayMode: 'transient-pointer', handedness: 'left', gripSpace: 'pinch' };
+  const hand = { targetRayMode: 'tracked-pointer', handedness: 'left', hand: new Map([['wrist', 'left']]) };
+  let pinchReads = 0;
+  const frame = { session: { visibilityState: 'visible', inputSources: [] },
+    getViewerPose: () => xrPose([0, 1.6, 0]), getJointPose: () => xrPose([-.3, 1.2, -.2]),
+    getPose: () => { pinchReads++; return xrPose([-.1, 1.3, -.1]); } };
+  for (const sources of [[], [pinch], []]) {
+    frame.session.inputSources = sources;
+    const sample = sampleAudiencePose(frame, reference, stage, { device: 'headset' });
+    assert.equal(sample.visibility, 'visible'); assert.ok(sample.head);
+    assert.equal(sample.left, null); assert.equal(sample.right, null);
+  }
+  for (const sources of [[hand], [hand, pinch], [pinch, hand], [hand]]) {
+    frame.session.inputSources = sources;
+    const sample = sampleAudiencePose(frame, reference, stage, { device: 'headset' });
+    assert.equal(sample.left.source, 'hand-wrist'); assert.deepEqual(sample.left.position, [-.3, 1.2, -.2]);
+    assert.equal(sample.right, null);
+  }
+  frame.session.inputSources = [hand, pinch]; frame.getJointPose = () => null;
+  assert.equal(sampleAudiencePose(frame, reference, stage, { device: 'headset' }).left, null);
+  assert.equal(pinchReads, 0, 'audience must not broadcast natural-input pinch grips');
+});
+
 test('presence excludes self and performers, uses the stage world transform, and faces along local minus Z', () => {
   const { scene, stage, presence, node } = fixture();
   presence.setPeers([peer('self'), peer('actor', 'headset', 'performer'), peer('friend')], 'self');

@@ -155,6 +155,28 @@ test('malformed browser geometry cannot poison or crash the wall placement loop'
   assert.equal(placement.diagnostics().tracking,false);
 });
 
+test('VR placement is explicitly virtual and never scans physical geometry, even after changing modes', () => {
+  const placement=new WallPlacement(new THREE.Scene());
+  const session={visibilityState:'visible',enabledFeatures:['hand-tracking']};
+  placement.start(session,{}, {mode:'auto',environment:'vr',distance:3,width:2.4});
+  const xrFrame=frame();
+  Object.defineProperty(xrFrame,'detectedPlanes',{get(){throw new Error('VR must not scan physical walls');}});
+  xrFrame.getDepthInformation=()=>{throw new Error('VR has no depth requirement');};
+  for (const mode of ['auto','manual','distance']) {
+    placement.reset({mode});
+    placement.update(xrFrame,1000);
+    assert.equal(placement.diagnostics().environment,'vr');
+    assert.equal(placement.diagnostics().planeAPI,'not-requested');
+    assert.equal(placement.diagnostics().depth,'disabled');
+    assert.equal(placement.candidate.source,'virtual-stage');
+    assert.match(placement.guidance()[0],/VR/);
+    assert.match(placement.guidance()[1],/実際の壁は検出しません/);
+    close(placement.confirm(xrFrame,null,1000).position.z,-3);
+    assert.equal(placement.canRequestRoomCapture(),false);
+  }
+  placement.end();
+});
+
 test('native plane detection rejects floors and places the nearest vertical wall facing the viewer', () => {
   const { placement } = fixture();
   const xrFrame = frame({ planes: [plane('far wall', [0, 1.6, -4]), plane('floor', [0, 0, 0], { horizontal: true }), plane('near wall', [0, 1.6, -2])] });

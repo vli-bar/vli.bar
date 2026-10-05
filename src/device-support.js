@@ -7,6 +7,6 @@ export function liveDeviceType({preference = 'auto', vrSupported = false, naviga
   return vrSupported ? 'headset' : /Android/i.test(device.userAgent ?? '') || isAppleMobile(device) ? 'phone' : 'desktop';
 }
 
-export function arViewMode({arSupported = false, cameraAvailable = false} = {}) {
-  return arSupported ? 'webxr' : cameraAvailable ? 'marker' : null;
+export function arViewMode({arSupported = false, vrSupported = false, cameraAvailable = false} = {}) {
+  return arSupported ? 'webxr' : vrSupported ? 'vr' : cameraAvailable ? 'marker' : null;
 }

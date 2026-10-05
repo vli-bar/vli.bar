@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Headset smoke test — synthetic Vision Pro and Quest input</title>
+  <style>
+    body{max-width:1120px;margin:24px auto;padding:0 16px;background:#111827;color:#eef2ff;font:16px/1.5 system-ui}
+    button{font:inherit;padding:10px 14px;margin:4px;background:#c6ff75;color:#172011;border:0;border-radius:6px}
+    button:focus-visible{outline:3px solid white;outline-offset:3px}
+    #viewport{width:100%;max-width:960px;aspect-ratio:8/5;margin:16px 0;background:#202c40}
+    canvas{display:block;width:100%;height:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#182338;padding:16px}
+    #assertions[data-state="passed"]{color:#c6ff75}#assertions[data-state="failed"]{color:#ffaaa0}
+  </style>
+</head>
+<body>
+  <h1>Headset smoke test</h1>
+  <p>合成XR入力による開発用テストです。実際のHUD・配置処理・Three.js描画を使用します。Vision Proはピンチ開始時のみ姿勢を渡し、完了時には姿勢を渡しません。実機・カメラ・WebXRセッションは使用しません。</p>
+  <div aria-label="Synthetic headset input">
+    <button id="vision-place">Vision Pro place</button>
+    <button id="vision-record">Vision Pro record</button>
+    <button id="vision-exit">Vision Pro exit</button>
+    <button id="quest-trigger">Quest trigger</button>
+    <button id="cancel-pinch">Cancel pinch</button>
+    <button id="disabled-action">Disabled action</button>
+  </div>
+  <div aria-label="Headset control layouts">
+    <button id="full-controls">Full controls</button>
+    <button id="vr-controls">VR controls</button>
+    <button id="record-controls">Record controls</button>
+    <button id="restart">Restart session</button>
+  </div>
+  <p id="status" role="status">Starting synthetic test…</p>
+  <div id="viewport" aria-label="Actual headset HUD and virtual stage"></div>
+  <h2>Assertions</h2><pre id="assertions">Waiting</pre>
+  <h2>Diagnostics</h2><pre id="result">Waiting</pre>
+  <script type="module" src="./headset-smoke.js"></script>
+</body>
+</html>

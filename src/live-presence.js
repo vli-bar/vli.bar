@@ -44,6 +44,9 @@ export function sampleAudiencePose(frame, referenceSpace, stage, { device = 'pho
   for (const input of frame.session?.inputSources ?? []) {
     const side = input.handedness;
     if (!['left', 'right'].includes(side)) continue;
+    // Natural-input pinch grips are temporary interaction points. Broadcasting
+    // them as wrists makes an audience member's hands jump on every selection.
+    if (input.targetRayMode === 'transient-pointer') continue;
     let tracked = null;
     try {
       const wrist = input.hand?.get?.('wrist');

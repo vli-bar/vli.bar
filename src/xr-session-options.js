@@ -3,14 +3,20 @@ export function xrInputMode(preference, vrSupported) {
   return ['touch', 'controller'].includes(preference) ? preference : vrSupported ? 'controller' : 'touch';
 }
 
-export function xrSessionOptions({mode, vrSupported, preference = 'auto', placementMode = 'auto', overlayRoot}) {
+export function xrSessionOptions({mode, arSupported = false, vrSupported = false, sessionPreference = 'auto', preference = 'auto', placementMode = 'auto', overlayRoot}) {
+  if (!arSupported && !vrSupported) return null;
   if (mode === 'record') return {
     type: vrSupported ? 'immersive-vr' : 'immersive-ar', inputMode: 'controller',
     init: {optionalFeatures: ['local-floor', 'hand-tracking', 'body-tracking']},
   };
-  const inputMode = xrInputMode(preference, vrSupported);
-  const geometry = inputMode === 'touch' || placementMode === 'auto';
+  const type = sessionPreference === 'vr' ? (vrSupported ? 'immersive-vr' : null)
+    : arSupported ? 'immersive-ar' : 'immersive-vr';
+  if (!type) return null;
+  // VR has no DOM overlay requirement, even if a phone preference was saved.
+  const inputMode = type === 'immersive-vr' ? 'controller' : xrInputMode(preference, vrSupported);
+  const geometry = type === 'immersive-ar' && (inputMode === 'touch' || placementMode === 'auto');
   const optionalFeatures = geometry ? ['local-floor', 'plane-detection', 'hit-test', 'depth-sensing'] : ['local-floor'];
+  if (inputMode === 'controller') optionalFeatures.push('hand-tracking');
   // Touch AR needs visible controls throughout the session, including exit.
   // A browser without DOM overlay must decline instead of trapping the user.
   const init = inputMode === 'touch'
@@ -21,5 +27,5 @@ export function xrSessionOptions({mode, vrSupported, preference = 'auto', placem
   if (geometry) init.depthSensing = {
     usagePreference: ['cpu-optimized'], dataFormatPreference: ['float32', 'luminance-alpha'], matchDepthView: true,
   };
-  return {type: 'immersive-ar', inputMode, init};
+  return {type, inputMode, init};
 }

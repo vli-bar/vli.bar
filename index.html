@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#101117">
-  <meta name="description" content="壁の向こうに現れるバーチャルライブ。iPhone・Android・PICOで体験・モーション収録ができるvli.bar Live Lab。">
+  <meta name="description" content="壁の向こうに現れるバーチャルライブ。iPhone・Android・PICO・Quest・Vision Proで体験・モーション収録ができるvli.bar Live Lab。">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <title>vli.bar — 壁の向こうで、会おう。</title>
 </head>
@@ -24,7 +24,7 @@
       <div class="actions">
         <button id="play" disabled>ライブを再生 <span aria-hidden="true">▶</span></button>
         <button id="ar" class="secondary" disabled>AR対応を確認中</button>
-        <button id="stop" class="quiet">停止・リセット</button>
+        <button id="vr" class="secondary" hidden disabled>VRでステージを開く</button><button id="stop" class="quiet">停止・リセット</button>
         <button id="exit-xr" class="secondary" hidden>XRを終了してページへ戻る</button>
       </div>
       <p id="status" role="status">ステージを準備しています…</p>
@@ -40,15 +40,16 @@
       <div>
         <span class="eyebrow">SET YOUR STAGE</span><h2>あなたの場所が、ライブ会場。</h2>
         <div class="placement-instructions">
-          <p><strong>壁を自動検出</strong><br>ARを開始し、壁の中心を見ます。候補枠が現れたら、スマホは「ここに配置」、HMDはトリガーで配置します。配置後にライブを再生できます。</p>
+          <p><strong>壁を自動検出</strong><br>ARを開始し、壁の中心を見ます。候補枠が現れたら、スマホは「ここに配置」、HMDは「ここに配置」をピンチまたはトリガーで選びます。配置後にライブを再生できます。</p>
           <p><strong>コントローラーで3点を指定</strong><br>舞台を置く範囲の左下・右下・左上で、コントローラーの緑の点を壁の数cm手前に合わせ、順にトリガーを押します。幅は実測し、高さは比率を保って決まります。</p>
-          <p>スマホは「置き直す」で再配置できます。HMDはサイドグリップで再配置し、自動検出中に押すと3点指定へ切り替わります。</p>
+          <p>スマホは「置き直す」で再配置できます。HMDも空間内の「置き直す」で再配置できます。コントローラーのサイドグリップも使えます。</p>
         </div>
         <p class="note" id="wall-capability" role="status">壁の自動検出はマーカー不要です。ブラウザが提供する平面・交点・奥行き情報を使います。端末の対応状況を確認しています…</p>
+        <p class="note">Quest・PICOは対応ブラウザでパススルーAR、Vision ProのSafariはVRライブを利用できます。手だけでも空間内のボタンで配置・再生・収録・終了できます。Vision ProのVRでは実際の壁を検出しません。</p>
         <p class="note" id="device-support" role="status">iPhoneはSafariでマーカーAR・カメラ収録・3Dプレビューを利用できます。Androidの壁検出ARにはARCore対応機種・Chrome・Google Play開発者サービス（AR）が必要です。カメラとARはHTTPSで開いてください。</p>
       </div>
       <div class="fields">
-        <label>WebXR ARの操作方法<select id="xr-input-mode"><option value="auto" selected>端末に合わせる</option><option value="touch">Androidスマホ（タップ）</option><option value="controller">HMD（コントローラー）</option></select></label>
+        <label>WebXRの操作方法<select id="xr-input-mode"><option value="auto" selected>端末に合わせる</option><option value="touch">Androidスマホ（タップ）</option><option value="controller">HMD（手・コントローラー）</option></select></label>
         <p class="note">スマホでは画面中央を壁へ向け、「ここに配置」をタップします。壁が見つからないときは「距離指定へ」で配置できます。3点指定はHMD用です。</p>
         <label>舞台の配置方法
           <select id="placement-mode" aria-describedby="wall-status">
@@ -76,7 +77,7 @@
     </section>
     <section id="lan" class="studio lan-studio">
       <div class="section-title"><div><span class="eyebrow">LOCAL LIVE ROOM</span><h2>同じ会場で、一緒に観る。</h2></div><span class="chip">LOCAL WIFI / INTERNET NOT REQUIRED</span></div>
-      <p class="note">同じWi-Fiの会場サーバーへ接続します。出演者の動きをステージへ配信し、ARでは観客同士の顔アバターも表示します。iPhone・Androidの観客は顔だけ、HMDは取得できる頭と手を共有します。</p>
+      <p class="note">同じWi-Fiの会場サーバーへ接続します。出演者の動きをステージへ配信し、AR・VRでは観客同士の顔アバターも表示します。iPhone・Androidの観客は顔だけ、HMDは取得できる頭と手を共有します。</p>
       <p id="lan-mode" class="note" role="status">会場PCから開いているか確認しています…</p>
       <form id="lan-form" class="lan-fields">
         <label>接続先（このページの会場PC）<input id="lan-url" type="url" placeholder="会場アプリを開くと自動設定" readonly required spellcheck="false" autocomplete="off"></label>
@@ -99,7 +100,7 @@
       <details><summary>会場でのオフライン起動</summary><p class="note">オフラインキットを会場PCへコピーして起動します。会場ではNode.jsの追加インストールやビルド、外部サイトへの接続は不要です。初回にキットの認証局証明書を各端末へ登録し、全員で表示されたローカルIPのURLを開きます。Wi-Fiの外部回線は不要です。</p><a href="./help/lan-offline.html" target="_blank" rel="noopener">オフラインの準備・起動手順</a></details>
     </section>
     <section id="studio" class="studio">
-      <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">iPHONE / ANDROID / PICO 4 ULTRA</span></div>
+      <div class="section-title"><div><span class="eyebrow">MOTION STUDIO</span><h2>その動きを、ステージへ。</h2></div><span class="chip">PHONE / PICO / QUEST / VISION PRO</span></div>
       <p id="tracking-status" role="status" class="note">取得できる頭・手・身体の情報を、収録画面で確認できます。</p>
       <div class="record-options"><label class="loop-option"><input id="record-music" type="checkbox" checked> NEON DOORに合わせて収録（1分12秒）</label><p class="note">オフにすると音楽なしで最大3分収録できます。音量は上のプレビュー画面で調整できます。</p><button id="music-check" class="quiet">収録用の曲を試聴</button></div>
       <div class="camera-studio" id="camera-studio">
@@ -118,7 +119,7 @@
         <p class="note">映像は端末内で処理し、保存・送信しません。マイクは使用しません。初回はこのアプリの配信元から姿勢推定モデル等の約17MBを読み込みます（環境により変動）。会場版は会場PCから読み込み、外部接続は不要です。収録は通常15Hzを上限とし、端末の性能で変わります。</p>
       </div>
       <div class="studio-grid">
-        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>収録画面では、待機中からアバターが動きを反映します。トリガーで3秒後に曲と収録を同時スタート。もう一度押すか曲が終わると保存し、ページに戻ってプレビューします。</p><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">画面下の「ページへ戻る」を光線で選んで終了できます。収録中は「保存して戻る」に変わります。待機中のグリップで正面を合わせ直せます。</p><p class="note">頭・コントローラーまたは手首を取得。対応環境では身体関節も使用し、取得できない足・胴体は推定します。指・表情・マイク音声・映像は収録しません。</p><details><summary>PICOの全身トラッキングについて</summary><p class="note">Web経由の全身追跡は、PICO Motion Trackersに加え、ブラウザの対応とEnterprise機能が必要と案内されています。一般向けPICO 4 Ultraでは、トラッカーを接続するだけでは身体データを取得できない場合があります。</p><a href="./help/lan-offline.html#pico" target="_blank" rel="noopener">PICOでの事前確認</a></details></div>
+        <div class="studio-card"><span class="step-number">01</span><h3>HMDで収録</h3><p>収録画面では、待機中からアバターが動きを反映します。「収録を開始」をピンチまたはトリガーで選ぶと、3秒後に曲と収録を同時スタート。「保存してプレビュー」を選ぶか曲が終わると保存し、ページに戻ってプレビューします。</p><button id="record-xr" disabled>収録の対応を確認中</button><p id="record-status" role="status">記録待機中</p><p class="note">画面下の「ページへ戻る」を光線で選んで終了できます。収録中は「保存して戻る」に変わります。待機中の「正面を合わせる」またはグリップで向きを合わせ直せます。</p><p class="note">頭・コントローラーまたは手首を取得。対応環境では身体関節も使用し、取得できない足・胴体は推定します。指・表情・マイク音声・映像は収録しません。</p><details><summary>PICOの全身トラッキングについて</summary><p class="note">Web経由の全身追跡は、PICO Motion Trackersに加え、ブラウザの対応とEnterprise機能が必要と案内されています。一般向けPICO 4 Ultraでは、トラッカーを接続するだけでは身体データを取得できない場合があります。</p><a href="./help/lan-offline.html#pico" target="_blank" rel="noopener">PICOでの事前確認</a></details></div>
         <div class="studio-card"><span class="step-number">02</span><h3>モーションを読み込む</h3><p>標準形式のVRM Animation（.vrma）を読み込み、アバターで確認できます。生の収録JSONも読み込めます。</p><label class="file">モーションをアップロード<input id="motion-file" type="file" accept=".vrma,.json,application/json,model/gltf-binary"></label><p id="take-info" role="status">モーションが選択されていません</p><button id="take-play" class="secondary" disabled>モーションをプレビュー</button><button id="take-ar" class="secondary" disabled>このモーションをARで確認</button><button id="take-pause" class="quiet" disabled>プレビューを一時停止</button><label class="loop-option"><input id="take-music" type="checkbox" disabled> 収録時の音楽を再生</label><label class="loop-option"><input id="take-loop" type="checkbox" checked> プレビューを繰り返す</label><p class="note">再生すると上の画面へ移動します。全身表示で確認でき、再生位置のバーで動きを見直せます。曲付きで収録したモーションは、音楽も同期して再生します。「このモーションをARで確認」では、壁に配置するか印刷マーカーを捉えた後、再生ボタンまたはHMDのトリガーで同じモーションを再生できます。</p><button id="demo-reset" class="quiet">デモに戻す</button><button id="demo-motion" class="quiet">デモの振り付けを読み込む</button></div>
         <div class="studio-card"><span class="step-number">03</span><h3>保存して、次のライブへ。</h3><p>カメラ・HMDで収録した直近のモーションはこのブラウザにも保存します。別の端末で使うときは、VRMAをダウンロードしてください。</p><button id="take-download" class="secondary" disabled>VRMAをダウンロード ↓</button><button id="raw-download" class="quiet" disabled>生の計測データ JSON ↓</button><p class="note">VRMA書き出しは付属モデルなどのVRM 1.0に対応。取得した情報と推定から作るアバター動作を保存します。計測記録と収録時の曲設定はJSONで保存できます。VRMAに音源は含まれません。</p><p class="note">アップロードは端末内への読み込みです。サーバーへ送信・共有されません。</p><details><summary>オリジナルデモ素材</summary><div class="download-links"><a href="./demo/vli-performer.vrm" download>VRMモデル ↓</a><a href="./demo/neon-door.wav" download>音源 WAV ↓</a><a href="./demo/neon-door.vrma" download>振り付け VRMA ↓</a><a href="./demo/CREDITS.txt">素材のクレジット</a></div></details></div>
       </div>

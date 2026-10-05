@@ -19,4 +19,8 @@ test('AR routes by actual capabilities with camera marker fallback', () => {
   assert.equal(arViewMode({arSupported:true,cameraAvailable:false}),'webxr');
   assert.equal(arViewMode({cameraAvailable:true}),'marker');
   assert.equal(arViewMode(),null);
+  assert.equal(arViewMode({arSupported:true,vrSupported:true,cameraAvailable:true}),'webxr','Quest/PICO prefer passthrough');
+  assert.equal(arViewMode({vrSupported:true,cameraAvailable:true}),'vr','VR-only headsets must not be sent to a camera marker');
+  assert.equal(arViewMode({vrSupported:true,cameraAvailable:false}),'vr');
+  assert.equal(liveDeviceType({vrSupported:true,navigator:{userAgent:'Macintosh',platform:'MacIntel',maxTouchPoints:5}}),'headset');
 });

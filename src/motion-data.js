@@ -74,13 +74,14 @@ export function validateMotionClip(data) {
   if (initialHeadHeight !== null && (!Number.isFinite(initialHeadHeight) || initialHeadHeight < .3 || initialHeadHeight > 3)) fail('初期頭部高さが不正です。');
   const usesWrist = frames.some(frame => ['left', 'right'].some(side => frame[side]?.source === 'hand-wrist'));
   const usesController = frames.some(frame => ['left', 'right'].some(side => frame[side] && frame[side].source !== 'hand-wrist'));
+  const hands = usesWrist ? (usesController ? 'mixed' : 'hand-wrist') : usesController ? 'controller-grip' : 'unavailable';
   const usesBody = frames.some(frame => frame.body && Object.keys(frame.body).length);
   const music = accompaniment(data.accompaniment, data.duration);
   return {
     format: MOTION_FORMAT, version: MOTION_VERSION, units: 'meters', coordinates: 'right-handed-y-up-head-origin',
     referenceSpace: data.referenceSpace, fps: data.fps, duration: data.duration, origin, initialHeadHeight,
-    tracking: camera ? { head: 'camera-pose', hands: 'camera-pose', body: 'camera-pose' }
-      : { head: 'viewer', hands: usesWrist ? (usesController ? 'mixed' : 'hand-wrist') : 'controller-grip', body: usesBody ? 'browser-body' : 'inferred' },
+    tracking: camera ? { head: 'camera-pose', hands: hands === 'unavailable' ? 'unavailable' : 'camera-pose', body: 'camera-pose' }
+      : { head: 'viewer', hands, body: usesBody ? 'browser-body' : 'inferred' },
     ...(music ? { accompaniment: music } : {}),
     frames,
   };

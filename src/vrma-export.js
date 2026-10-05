@@ -7,6 +7,13 @@ const EXPRESSION_NAMES = ['aa', 'happy', 'blink'];
 const error = message => { throw new Error(`VRMA書き出し: ${message}`); };
 const finite = values => values.every(Number.isFinite);
 
+function captureDescription(motion) {
+  if (motion.referenceSpace === 'camera') return 'Camera pose estimates; unobserved joints and retargeting inferred';
+  if (motion.tracking.body === 'browser-body') return 'WebXR head and browser body joints; browser and retargeting estimates included';
+  if (motion.tracking.hands === 'unavailable') return 'WebXR head capture only; hands not tracked; torso and limbs inferred';
+  return 'WebXR head and controller or hand-wrist capture; torso and limbs inferred';
+}
+
 function binaryGLTF(json, arrays) {
   let byteLength = 0;
   json.bufferViews = [];
@@ -120,10 +127,7 @@ export function exportMotionVRMA(vrm, source, { fps = 30 } = {}) {
       extensionsUsed: [EXTENSION], extensions: { [EXTENSION]: extension },
       scene: 0, scenes: [{ name: 'VRM Animation', nodes: rootNodes }], nodes,
       animations: [{ name: capture ? 'Captured performance' : motion.title, channels, samplers }],
-      extras: { source: capture ? (motion.tracking?.body === 'browser-body'
-        ? 'WebXR head, hands and browser body joints; browser and retargeting estimates included'
-        : 'WebXR head and controller or hand-wrist capture; torso and limbs inferred')
-        : 'Original vli.bar choreography', bakedFramesPerSecond: fps },
+      extras: { source: capture ? captureDescription(motion) : 'Original vli.bar choreography', bakedFramesPerSecond: fps },
     }, arrays);
   } finally {
     for (const { bone, position, quaternion, scale } of originalPose) { bone.position.copy(position); bone.quaternion.copy(quaternion); bone.scale.copy(scale); }
